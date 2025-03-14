@@ -1,0 +1,115 @@
+{
+    "search": {
+        "index": "",
+        "page": "1",
+        "display": "",
+        "sort": ""
+    },
+    "content": {
+        "types": [
+            "book_fiction",
+            "book_nonfiction",
+            "book_unknown",
+            "magazine",
+            "book_comic",
+            "standards_document",
+            "other",
+            "musical_score"
+        ],
+        "ignore": [
+            "book_nonfiction",
+            "book_unknown",
+            "magazine",
+            "book_comic",
+            "standards_document",
+            "other",
+            "musical_score"
+        ]
+    },
+    "formats": {
+        "ignore": [
+            "pdf",
+            "mobi",
+            "fb2",
+            "cbr"
+        ],
+        "definitions": {
+            "epub": {
+                "priority": 100,
+                "extension": ".epub",
+                "icon": "📙",
+                "display_name": "EPUB",
+                "content_type": "application/epub+zip"
+            },
+            "pdf": {
+                "priority": 80,
+                "extension": ".pdf",
+                "icon": "📑",
+                "display_name": "PDF",
+                "content_type": "application/pdf"
+            },
+            "mobi": {
+                "priority": 60,
+                "extension": ".mobi",
+                "icon": "📕",
+                "display_name": "MOBI",
+                "content_type": "application/x-mobipocket-ebook"
+            },
+            "fb2": {
+                "priority": 40,
+                "extension": ".fb2",
+                "icon": "📄",
+                "display_name": "FB2",
+                "content_type": "application/fb2"
+            },
+            "cbr": {
+                "priority": 20,
+                "extension": ".cbr",
+                "icon": "🗃️",
+                "display_name": "CBR",
+                "content_type": "application/x-cbr"
+            }
+        }
+    },
+    "access": {
+        "types": [
+            "aa_download",
+            "external_download",
+            "external_borrow",
+            "external_borrow_printdisabled",
+            "torrents_available"
+        ],
+        "ignore": [
+            "external_download",
+            "external_borrow",
+            "external_borrow_printdisabled",
+            "torrents_available"
+        ]
+    },
+    "languages": {
+        "types": [
+            "en",
+            "zh",
+            "ru",
+            "es",
+            "fr",
+            "de",
+            "it",
+            "pt",
+            "pl",
+            "nl"
+        ],
+        "ignore": [
+            "zh",
+            "ru",
+            "es",
+            "fr",
+            "de",
+            "it",
+            "pt",
+            "pl",
+            "nl"
+        ]
+    },
+    "output_dir": "books/"
+}

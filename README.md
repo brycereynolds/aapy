@@ -9,7 +9,7 @@ A Python script for automatically downloading books from Anna's Archive using se
 - Automatically download books via fast partner servers
 - Simple environment variable authentication
 - Detailed logging and progress reporting
-- **NEW:** Customizable format priorities and preferences
+- Customizable configuration via JSON file
 
 ## Requirements
 
@@ -67,7 +67,7 @@ A Python script for automatically downloading books from Anna's Archive using se
    pip install -r requirements.txt
    ```
 
-6. **Set up authentication**:
+6. **Set up authentication and configuration**:
 
    ```bash
    # Copy the example .env file
@@ -76,7 +76,154 @@ A Python script for automatically downloading books from Anna's Archive using se
    # Edit the .env file with your Anna's Archive account ID
    # You can find this by logging into Anna's Archive and checking your cookies
    # Look for the "aa_account_id2" cookie value
+   
+   # Make sure config.json exists (should be provided with the script)
+   # If not, create it using the template from the documentation
    ```
+
+## Configuration
+
+The script uses a `config.json` file for all search parameters, format preferences, and output settings. The default configuration is included, but you can customize it for your needs:
+
+```json
+{
+  "search": {
+    "index": "",
+    "page": "1",
+    "display": "",
+    "sort": ""
+  },
+  "content": {
+    "types": [
+      "book_fiction",
+      "book_nonfiction",
+      "book_unknown",
+      "magazine",
+      "book_comic",
+      "standards_document",
+      "other",
+      "musical_score"
+    ],
+    "ignore": [
+      "book_nonfiction",
+      "book_unknown",
+      "magazine",
+      "book_comic",
+      "standards_document",
+      "other",
+      "musical_score"
+    ]
+  },
+  "formats": {
+    "ignore": [
+      "pdf",
+      "mobi",
+      "fb2",
+      "cbr"
+    ],
+    "definitions": {
+      "epub": {
+        "priority": 100,
+        "extension": ".epub",
+        "icon": "📙",
+        "display_name": "EPUB",
+        "content_type": "application/epub+zip"
+      },
+      "pdf": {
+        "priority": 80,
+        "extension": ".pdf",
+        "icon": "📑",
+        "display_name": "PDF",
+        "content_type": "application/pdf"
+      },
+      "mobi": {
+        "priority": 60,
+        "extension": ".mobi",
+        "icon": "📕",
+        "display_name": "MOBI",
+        "content_type": "application/x-mobipocket-ebook"
+      },
+      "fb2": {
+        "priority": 40,
+        "extension": ".fb2",
+        "icon": "📄",
+        "display_name": "FB2",
+        "content_type": "application/fb2"
+      },
+      "cbr": {
+        "priority": 20,
+        "extension": ".cbr",
+        "icon": "🗃️",
+        "display_name": "CBR",
+        "content_type": "application/x-cbr"
+      }
+    }
+  },
+  "access": {
+    "types": [
+      "aa_download",
+      "external_download",
+      "external_borrow",
+      "external_borrow_printdisabled",
+      "torrents_available"
+    ],
+    "ignore": [
+      "external_download",
+      "external_borrow",
+      "external_borrow_printdisabled",
+      "torrents_available"
+    ]
+  },
+  "languages": {
+    "types": [
+      "en",
+      "zh",
+      "ru",
+      "es",
+      "fr",
+      "de",
+      "it",
+      "pt",
+      "pl",
+      "nl"
+    ],
+    "ignore": [
+      "zh",
+      "ru",
+      "es",
+      "fr",
+      "de",
+      "it",
+      "pt",
+      "pl",
+      "nl"
+    ]
+  },
+  "output_dir": "books/"
+}
+```
+
+### Configuration Options:
+
+- **search**: Basic search parameters
+- **content**: Content types configuration
+  - **types**: All available content types
+  - **ignore**: Content types to exclude from search
+- **formats**: File formats configuration
+  - **ignore**: Formats to exclude from search
+  - **definitions**: Detailed metadata for each format
+    - **priority**: Numeric priority value (higher = preferred)
+    - **extension**: File extension (e.g., ".epub")
+    - **icon**: Emoji icon for display
+    - **display_name**: Human-readable format name
+    - **content_type**: MIME type for the format
+- **access**: Access methods configuration
+  - **types**: All available access methods
+  - **ignore**: Access methods to exclude
+- **languages**: Languages configuration
+  - **types**: All available languages
+  - **ignore**: Languages to exclude
+- **output_dir**: Default directory to save downloaded books
 
 ## Usage
 
@@ -119,44 +266,14 @@ Search for books without downloading them (useful for testing and troubleshootin
 python aapy.py debug "Foundation Asimov"
 ```
 
-### Selection Menu
-
-All modes present an interactive selection menu that shows:
-- Book title and author
-- Format information (EPUB 📙, PDF 📑, MOBI 📕)
-- File size when available
-- Option to cancel the download
-
-This allows you to make an informed choice even when only one result is found.
-
-### Format Customization
-
-You can now specify which formats you want to search for and download using the `--formats` option:
-
-```bash
-# Only search for and download EPUBs
-python aapy.py single "Project Hail Mary" --formats epub
-
-# Prioritize PDF over EPUB (order matters)
-python aapy.py interactive --formats pdf,epub,mobi
-
-# Include additional formats like FB2
-python aapy.py interactive --formats epub,pdf,mobi,fb2
-```
-
-Available formats:
-- `epub` - EPUB format (default priority: highest)
-- `pdf` - PDF format (default priority: medium)
-- `mobi` - MOBI format (default priority: low)
-- `fb2` - FB2 format (disabled by default)
-- `cbr` - CBR format (disabled by default)
-
-The order you specify formats determines their priority in search results.
-
 ### Command Line Options
 
 ```
-usage: aapy.py {single,interactive,debug} [-h] [--output OUTPUT] [--verbose] [--formats FORMATS]
+usage: aapy.py {single,interactive,debug} [-h] [--config CONFIG] [--output OUTPUT] [--verbose] 
+                                          [--formats FORMAT [FORMAT ...]]
+                                          [--content CONTENT [CONTENT ...]]
+                                          [--access ACCESS [ACCESS ...]]
+                                          [--languages LANGUAGE [LANGUAGE ...]]
 
 Download books from Anna's Archive by search query
 
@@ -167,11 +284,39 @@ modes:
 
 options:
   -h, --help            show this help message and exit
+  --config CONFIG       Path to config file (default: config.json)
   --output OUTPUT, -o OUTPUT
-                        Directory to save downloaded books (overrides OUTPUT_DIR in .env)
+                        Directory to save downloaded books (overrides config's output_dir)
   --verbose, -v         Enable verbose logging
-  --formats FORMATS, -f FORMATS
-                        Comma-separated list of enabled formats (e.g., "epub,pdf,mobi")
+  --formats FORMAT [FORMAT ...]
+                        Formats to include (all others will be ignored)
+  --content CONTENT [CONTENT ...]
+                        Content types to include (all others will be ignored)
+  --access ACCESS [ACCESS ...]
+                        Access methods to include (all others will be ignored)
+  --languages LANGUAGE [LANGUAGE ...]
+                        Languages to include (all others will be ignored)
+```
+
+### Command Line Configuration Overrides
+
+You can override configuration settings through command-line arguments. When you specify options on the command line, all other options of that type will be automatically ignored:
+
+```bash
+# Only include EPUB and PDF formats (ignoring all others)
+python aapy.py single "Dune Herbert" --formats epub pdf
+
+# Only include fiction books
+python aapy.py single "Asimov" --content book_fiction
+
+# Only include direct downloads from Anna's Archive
+python aapy.py single "Sapiens" --access aa_download
+
+# Only include English and Spanish books
+python aapy.py single "Don Quixote" --languages en es
+
+# Use a custom config file
+python aapy.py interactive --config my_custom_config.json
 ```
 
 ### Authentication
@@ -193,25 +338,66 @@ To find your account ID:
 
 ## How It Works
 
-1. **Search Phase**: Searches Anna's Archive with specific parameters to find books matching your query
+1. **Search Phase**: Searches Anna's Archive with parameters from config.json to find books matching your query
 2. **Selection Phase**: Presents an interactive menu of all matching books with format details
 3. **Download Phase**: Finds the fastest download link and saves the book file
 
-## Format Prioritization System
+## Advanced Configuration
 
-The script now uses a dedicated configuration system for handling file formats:
+### Customizing Search Parameters
 
-- Each format has metadata including priority, icon, extension, and display name
-- Formats are prioritized based on their assigned priority values
-- Results are sorted by priority, so preferred formats appear first
-- You can customize which formats are enabled and their priorities via command line
+You can customize the search parameters in the config.json file to:
 
-## Notes
+1. **Adjust format priorities**:
+   ```json
+   "formats": {
+     "definitions": {
+       "pdf": {
+         "priority": 120
+       },
+       "epub": {
+         "priority": 100
+       }
+     }
+   }
+   ```
 
-- The script will only search for and download books available through Anna's Archive directly (not external sources)
-- By default, it prioritizes EPUB format, then PDF, then MOBI
-- Search parameters are customizable by modifying the `DEFAULT_SEARCH_PARAMS` dictionary in the script
-- Downloaded books are saved to the "books/" directory by default (configurable in .env)
+2. **Include different content types**:
+   ```json
+   "content": {
+     "ignore": ["magazine", "book_comic"]
+   }
+   ```
+
+3. **Change language preferences**:
+   ```json
+   "languages": {
+     "ignore": ["zh", "ru"]
+   }
+   ```
+
+### Adding New Format Types
+
+You can add support for new format types by adding them to the config:
+
+1. Add a complete definition under `definitions`:
+
+```json
+"formats": {
+  "ignore": ["mobi", "fb2", "cbr"],
+  "definitions": {
+    "djvu": {
+      "priority": 90,
+      "extension": ".djvu",
+      "icon": "📔",
+      "display_name": "DJVU",
+      "content_type": "image/vnd.djvu"
+    }
+  }
+}
+```
+
+This extensible approach lets you add support for new formats without changing any code.
 
 ## Quick Start
 
