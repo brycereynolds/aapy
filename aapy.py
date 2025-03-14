@@ -10,29 +10,23 @@ from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
 from dotenv import load_dotenv
 
-# Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Base URL for Anna's Archive
 BASE_URL = "https://annas-archive.org"
 
-# Load environment variables
 load_dotenv()
 
-# Default search parameters
 DEFAULT_SEARCH_PARAMS = {
-    # Basic search parameters
     'index': '',
     'page': '1',
-    'q': '',  # Will be set to search query
+    'q': '',
     'display': '',
     'sort': '',
     
-    # Content type parameters
     'content': [
         'anti__book_nonfiction',  # Exclude non-fiction
         'book_fiction',           # Include fiction
@@ -44,7 +38,6 @@ DEFAULT_SEARCH_PARAMS = {
         'anti__musical_score'     # Exclude musical scores
     ],
     
-    # File format parameters
     'ext': [
         'anti__pdf',   # Exclude PDF
         'epub',        # Include EPUB
@@ -53,7 +46,6 @@ DEFAULT_SEARCH_PARAMS = {
         'anti__cbr'    # Exclude CBR
     ],
     
-    # Access type parameters  
     'acc': [
         'aa_download',                      # Include direct downloads
         'anti__external_download',          # Exclude external downloads
@@ -62,7 +54,6 @@ DEFAULT_SEARCH_PARAMS = {
         'anti__torrents_available'          # Exclude torrents
     ],
     
-    # Language parameters
     'lang': [
         'en',          # Include English
         'anti__zh',    # Exclude Chinese
@@ -78,43 +69,30 @@ DEFAULT_SEARCH_PARAMS = {
 }
 
 def construct_search_url(query):
-    """
-    Construct the search URL for a given query using the defined search parameters.
-    """
-    # Create a copy of the default params
+    """Construct the search URL for a given query using the defined search parameters."""
     params = DEFAULT_SEARCH_PARAMS.copy()
-    
-    # Set the query as the search parameter
     params['q'] = query
     
-    # Build the query string
     query_parts = []
-    
     for key, value in params.items():
         if isinstance(value, list):
-            # Handle multi-value parameters (content, ext, acc, lang)
             for item in value:
                 query_parts.append(f"{key}={item}")
         else:
-            # Handle single-value parameters
             query_parts.append(f"{key}={value}")
     
-    # Join all parts with & and append to base URL
     query_string = "&".join(query_parts)
     return f"{BASE_URL}/search?{query_string}"
 
 def extract_search_results(html_content):
-    """
-    Parse the search results HTML and extract book links with metadata.
-    Includes both direct matches and partial matches, allowing EPUB, PDF, and MOBI formats.
-    """
-    # Pre-process the HTML to remove comment tags around lazy-loaded content
+    """Parse the search results HTML and extract book links with metadata."""
+    # Remove HTML comments that hide lazy-loaded content
     html_content = html_content.replace("<!--", "").replace("-->", "")
     
     soup = BeautifulSoup(html_content, 'html.parser')
     books = []
     
-    # Get count of partial matches if present
+    # Check if there are partial matches indicated in the results
     partial_matches_count = None
     partial_matches_text = soup.select_one("div.italic.mt-2")
     if partial_matches_text and "partial matches" in partial_matches_text.text:
@@ -125,19 +103,17 @@ def extract_search_results(html_content):
         except (ValueError, IndexError):
             pass
     
-    # Find all book links that match the MD5 pattern - in all sections, including partial matches
+    # Find all book links with MD5 hashes
     book_links = soup.select('a[href^="/md5/"]')
     logger.info(f"Found {len(book_links)} total search results after uncommenting")
     
-    # Debug: Log ALL links with their href values and extracted text
+    # Process each book link to extract information
     for i, link in enumerate(book_links):
         href = link.get('href', '')
-        
-        # Get ALL text within the link element
         all_text = link.get_text(separator=' ', strip=True)
         
-        # Determine format priority
-        format_priority = 0  # Default/unknown
+        # Determine format priority based on file type
+        format_priority = 0
         if 'epub' in all_text.lower():
             format_priority = 3  # Highest priority
         elif 'pdf' in all_text.lower():
@@ -145,12 +121,12 @@ def extract_search_results(html_content):
         elif 'mobi' in all_text.lower():
             format_priority = 1  # Lower priority
         
-        # Skip if not one of our allowed formats
+        # Skip unsupported formats
         if format_priority == 0:
             logger.info(f"Skipping unsupported format in result {i+1}")
             continue
             
-        # Get format type for display
+        # Set human-readable format type
         format_type = "Unknown"
         if format_priority == 3:
             format_type = "EPUB"
@@ -161,19 +137,17 @@ def extract_search_results(html_content):
         
         logger.info(f"Found {format_type} result {i+1}: {href}")
         
-        # Extract title
+        # Extract book metadata from the link
         title = "Unknown Title"
         title_elem = link.select_one('h3')
         if title_elem:
             title = title_elem.text.strip()
         
-        # Extract author
         author = "Unknown Author"
         author_elem = link.select_one('div.italic')
         if author_elem:
             author = author_elem.text.strip()
         
-        # Extract format for reference
         format_text = "Unknown format"
         format_elem = link.select_one('div[class*="text-gray-500"], div.text-gray-500, .text-gray-500')
         if format_elem:
@@ -185,53 +159,43 @@ def extract_search_results(html_content):
             'author': author,
             'format': format_text,
             'format_priority': format_priority,
-            'original_index': i,  # Keep track of original ordering
-            'is_partial_match': partial_matches_count is not None  # Flag if this is a partial match
+            'original_index': i,
+            'is_partial_match': partial_matches_count is not None
         }
         
         books.append(book_info)
     
-    # Sort results by format priority (highest first), then by original index to maintain original order
+    # Sort results by format priority (highest first), then by original order
     books.sort(key=lambda x: (-x['format_priority'], x['original_index']))
     
     logger.info(f"Found {len(books)} acceptable format results after filtering")
     return books
 
 def display_selection_menu(books):
-    """
-    Display an interactive selection menu for the user to choose a book.
-    Returns the index of the selected book or None if cancelled.
-    Uses InquirerPy for a keyboard-navigable interface.
-    """
+    """Display an interactive selection menu for the user to choose a book."""
     if not books:
         return None
     
-    # If there's only one result, return it without asking
     if len(books) == 1:
         print(f"Only one result found: {books[0]['title']}")
         return 0
     
-    # Group results by format priority
     epub_count = sum(1 for book in books if book['format_priority'] == 3)
     pdf_count = sum(1 for book in books if book['format_priority'] == 2)
     mobi_count = sum(1 for book in books if book['format_priority'] == 1)
     
     print(f"\nFound {len(books)} results ({epub_count} EPUB, {pdf_count} PDF, {mobi_count} MOBI):")
     
-    # Create choices for the menu
     choices = []
     for i, book in enumerate(books):
-        # Extract size if available in the format text
         size = "Unknown size"
         if book['format'] and "MB" in book['format']:
             size_match = re.search(r'(\d+\.\d+)MB', book['format'])
             if size_match:
                 size = f"{size_match.group(1)}MB"
         
-        # Format a clean display name
         display_name = f"{book['title']} by {book['author']}"
         
-        # Get format type icon
         format_icon = "📄"  # Default
         if book['format_priority'] == 3:
             format_icon = "📙"  # EPUB
@@ -240,16 +204,12 @@ def display_selection_menu(books):
         elif book['format_priority'] == 1:
             format_icon = "📕"  # MOBI
         
-        # Create a more detailed entry for the menu
         details = f"\n   {format_icon} Format: {book['format']}\n   Size: {size}"
         
-        # Add to choices with the index as the value
         choices.append(Choice(value=i, name=f"{display_name}{details}"))
     
-    # Add a cancel option
     choices.append(Choice(value=None, name="Cancel download"))
     
-    # Display the interactive menu
     result = inquirer.select(
         message="Select a book to download:",
         choices=choices,
@@ -262,36 +222,27 @@ def display_selection_menu(books):
     return result
 
 def extract_fast_download_link(html_content):
-    """
-    Extract the first "fast download" link from the book page.
-    No longer filtering by EPUB only, as we support multiple formats.
-    """
+    """Extract the first "fast download" link from the book page."""
     soup = BeautifulSoup(html_content, 'html.parser')
     
-    # Look for links with "fast" in the text
     download_links = soup.select('a[href^="/fast_download/"]')
     
     for link in download_links:
         if 'fast' in link.text.lower():
             return link['href']
     
-    # If no specific "fast" link found, return the first download link if available
     if download_links:
         return download_links[0]['href']
     
     return None
 
 def download_file(session, url, output_path, format_priority=None):
-    """
-    Download a file with progress reporting.
-    """
+    """Download a file with progress reporting."""
     response = session.get(url, stream=True)
     response.raise_for_status()
     
-    # Check for content type to ensure it matches expected format
     content_type = response.headers.get('content-type', '').lower()
     
-    # Get expected format from priority
     expected_format = None
     if format_priority == 3:
         expected_format = "epub"
@@ -300,20 +251,15 @@ def download_file(session, url, output_path, format_priority=None):
     elif format_priority == 1:
         expected_format = "mobi"
     
-    # If we have an expected format, verify content matches (loosely)
     if expected_format and expected_format not in content_type and 'octet-stream' not in content_type:
-        # Check with content-disposition as well
         content_disp = response.headers.get('content-disposition', '').lower()
         if expected_format not in content_disp and 'filename=' in content_disp:
             logger.warning(f"Content may not match expected format {expected_format}: {content_type}")
     
-    # Get total file size if available
     total_size = int(response.headers.get('content-length', 0))
     
-    # Create the directory if it doesn't exist
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     
-    # Download the file
     downloaded = 0
     with open(output_path, 'wb') as f:
         for chunk in response.iter_content(chunk_size=8192):
@@ -321,25 +267,20 @@ def download_file(session, url, output_path, format_priority=None):
                 f.write(chunk)
                 downloaded += len(chunk)
                 
-                # Report progress for large files
                 if total_size > 0:
                     percent = (downloaded / total_size) * 100
                     print(f"\rDownloading: {downloaded/1024/1024:.1f}MB of {total_size/1024/1024:.1f}MB ({percent:.1f}%)", end='')
     
-    print()  # New line after progress reporting
+    print()
     return True
 
 def get_filename_from_headers(headers, format_priority=None):
-    """
-    Extract filename from Content-Disposition header.
-    Optionally enforce a specific extension based on format_priority.
-    """
+    """Extract filename from Content-Disposition header."""
     if 'content-disposition' in headers:
         match = re.search(r'filename="?([^"]+)"?', headers['content-disposition'])
         if match:
             filename = match.group(1)
             
-            # Optionally enforce extension based on format_priority
             if format_priority:
                 base_name = os.path.splitext(filename)[0]
                 if format_priority == 3:  # EPUB
@@ -354,26 +295,19 @@ def get_filename_from_headers(headers, format_priority=None):
     return None
 
 def clean_filename(text):
-    """
-    Clean a string to make it suitable for a filename.
-    """
+    """Clean a string to make it suitable for a filename."""
     return re.sub(r'[\\/*?:"<>|]', '', text)
 
 def download_book_by_query(query, output_dir, interactive=False):
-    """
-    Main function to download a book by search query.
-    If interactive=True, will display a selection menu instead of auto-selecting.
-    """
-    # Set up session with authentication
+    """Main function to download a book by search query."""
+    # Set up session with user agent and authentication
     session = requests.Session()
     
-    # Add default headers
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
     })
     
-    # Get account ID from environment variables
     account_id = os.getenv('AA_ACCOUNT_ID')
     if account_id:
         session.cookies.set('aa_account_id2', account_id)
@@ -381,7 +315,7 @@ def download_book_by_query(query, output_dir, interactive=False):
     else:
         logger.warning("No account ID found in .env file - some results may be limited")
     
-    # Step 1: Search for the book
+    # Search for books matching query
     search_url = construct_search_url(query)
     logger.info(f"Searching for query: {query}")
     logger.info(f"URL: {search_url}")
@@ -393,44 +327,41 @@ def download_book_by_query(query, output_dir, interactive=False):
         logger.error(f"Search request failed: {e}")
         return False
     
-    # Extract search results
     books = extract_search_results(response.text)
     if not books:
         logger.error("No acceptable format books found for this query")
         return False
     
-    # Select the book to download
+    # Handle selection based on mode (interactive vs automatic)
     selected_book = None
     
     if interactive:
-        # Interactive mode: let the user choose
         selected_idx = display_selection_menu(books)
         if selected_idx is None:
             logger.info("User cancelled selection")
             return False
         selected_book = books[selected_idx]
     else:
-        # Auto-select mode: use our algorithm
-        # Select first book if only one result
+        # For automatic mode, try to find the best match
         if len(books) == 1:
             selected_book = books[0]
         else:
-            # Try to find an exact query match
+            # Try to find an exact match in title or author
             for book in books:
                 if query.lower() in book['title'].lower() or query.lower() in book['author'].lower():
                     logger.info(f"Found exact query match: {book['title']}")
                     selected_book = book
                     break
             
-            # If no exact match, use the first result
+            # If no exact match found, use the first result
             if not selected_book:
                 logger.info(f"Using first result: {books[0]['title']}")
                 selected_book = books[0]
     
+    # Determine metadata about the selected book
     is_partial_match = selected_book.get('is_partial_match', False)
     match_type = "partial match" if is_partial_match else "direct match"
     
-    # Determine format type text
     format_type = "Unknown"
     if selected_book['format_priority'] == 3:
         format_type = "EPUB"
@@ -441,7 +372,7 @@ def download_book_by_query(query, output_dir, interactive=False):
     
     logger.info(f"Selected {format_type} book ({match_type}): {selected_book['title']} by {selected_book.get('author', 'Unknown')}")
     
-    # Step 2: Go to the book page
+    # Navigate to book page to find download link
     book_url = urljoin(BASE_URL, selected_book['link'])
     logger.info(f"Accessing book page: {book_url}")
     
@@ -452,30 +383,27 @@ def download_book_by_query(query, output_dir, interactive=False):
         logger.error(f"Book page request failed: {e}")
         return False
     
-    # Step 3: Extract the fast download link
     download_link = extract_fast_download_link(response.text)
     if not download_link:
         logger.error("No download link found on the book page")
         return False
     
-    # Step 4: Download the book
+    # Start download process
     download_url = urljoin(BASE_URL, download_link)
     logger.info(f"Found download link: {download_url}")
     
     try:
-        # Start the download
-        response = session.head(download_url)  # Use HEAD to get headers without downloading
+        # Get file metadata before downloading
+        response = session.head(download_url)
         response.raise_for_status()
         
-        # Determine filename
+        # Determine filename, either from headers or construct from book info
         filename = get_filename_from_headers(response.headers, selected_book['format_priority'])
         if not filename:
-            # Create filename from book info
             title = clean_filename(selected_book['title'])
             author = clean_filename(selected_book.get('author', 'Unknown'))
             
-            # Add appropriate extension based on format
-            extension = ".epub"  # Default
+            extension = ".epub"
             if selected_book['format_priority'] == 2:
                 extension = ".pdf"
             elif selected_book['format_priority'] == 1:
@@ -500,14 +428,14 @@ def download_book_by_query(query, output_dir, interactive=False):
         return False
 
 def interactive_mode(output_dir, verbose):
-    """
-    Run the downloader in interactive mode, allowing for multiple queries to be processed.
-    """
+    """Run the downloader in interactive mode, allowing for multiple queries to be processed."""
+    # Configure logging based on verbosity
     if verbose:
         logger.setLevel(logging.DEBUG)
     else:
         logger.setLevel(logging.INFO)
     
+    # Display welcome message and instructions
     print("\n=== Anna's Archive Interactive Downloader ===")
     print(f"Output directory: {output_dir}")
     print("Enter search queries one at a time. Type 'exit', 'quit', or press Ctrl+C to exit.")
@@ -515,16 +443,14 @@ def interactive_mode(output_dir, verbose):
     print("When multiple books are found, you'll get a selection menu.")
     print("=========================================\n")
     
-    # Set up session with authentication
+    # Set up session with user agent and authentication
     session = requests.Session()
     
-    # Add default headers
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
     })
     
-    # Get account ID from environment variables
     account_id = os.getenv('AA_ACCOUNT_ID')
     if account_id:
         session.cookies.set('aa_account_id2', account_id)
@@ -532,6 +458,7 @@ def interactive_mode(output_dir, verbose):
     else:
         logger.warning("No account ID found in .env file - some results may be limited")
     
+    # Main interactive loop
     try:
         while True:
             query_input = input("\nEnter search query (or 'quit' to exit): ").strip()
@@ -540,13 +467,13 @@ def interactive_mode(output_dir, verbose):
                 print("Exiting...")
                 break
             
-            # Handle multiple queries pasted at once (one per line)
+            # Handle case where user pastes multiple queries at once
             queries = [query.strip() for query in query_input.split('\n') if query.strip()]
             
             for query in queries:
                 print(f"\nProcessing query: {query}")
                 
-                # Step 1: Search for the book
+                # Search for books matching query
                 search_url = construct_search_url(query)
                 logger.info(f"URL: {search_url}")
                 
@@ -558,14 +485,13 @@ def interactive_mode(output_dir, verbose):
                     print(f"❌ Search failed for query: {query}")
                     continue
                 
-                # Extract search results
                 books = extract_search_results(response.text)
                 
                 if not books:
                     print(f"❌ No books found for query: {query}")
                     continue
                 
-                # Display selection menu and get user's choice
+                # Let user select which book to download
                 selected_idx = display_selection_menu(books)
                 if selected_idx is None:
                     print(f"Download cancelled for query: {query}")
@@ -574,7 +500,7 @@ def interactive_mode(output_dir, verbose):
                 selected_book = books[selected_idx]
                 print(f"Selected: {selected_book['title']} by {selected_book.get('author', 'Unknown')}")
                 
-                # Step 2: Go to the book page
+                # Navigate to book page to find download link
                 book_url = urljoin(BASE_URL, selected_book['link'])
                 logger.info(f"Accessing book page: {book_url}")
                 
@@ -586,30 +512,27 @@ def interactive_mode(output_dir, verbose):
                     print(f"❌ Failed to access book page for query: {query}")
                     continue
                 
-                # Step 3: Extract the fast download link
                 download_link = extract_fast_download_link(response.text)
                 if not download_link:
                     print("❌ No download link found on the book page")
                     continue
                 
-                # Step 4: Download the book
+                # Start download process
                 download_url = urljoin(BASE_URL, download_link)
                 logger.info(f"Found download link: {download_url}")
                 
                 try:
-                    # Start the download
-                    response = session.head(download_url)  # Use HEAD to get headers without downloading
+                    # Get file metadata before downloading
+                    response = session.head(download_url)
                     response.raise_for_status()
                     
-                    # Determine filename
+                    # Determine filename, either from headers or construct from book info
                     filename = get_filename_from_headers(response.headers, selected_book['format_priority'])
                     if not filename:
-                        # Create filename from book info
                         title = clean_filename(selected_book['title'])
                         author = clean_filename(selected_book.get('author', 'Unknown'))
                         
-                        # Add extension based on format priority
-                        extension = ".epub"  # Default
+                        extension = ".epub"
                         if selected_book['format_priority'] == 2:
                             extension = ".pdf"
                         elif selected_book['format_priority'] == 1:
@@ -637,24 +560,19 @@ def interactive_mode(output_dir, verbose):
     return 0
 
 def debug_search(query, output_dir, verbose=False):
-    """
-    Debug function to just search and print results without downloading.
-    """
+    """Debug function to just search and print results without downloading."""
     if verbose:
         logger.setLevel(logging.DEBUG)
     else:
         logger.setLevel(logging.INFO)
     
-    # Set up session with authentication
     session = requests.Session()
     
-    # Add default headers
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
     })
     
-    # Get account ID from environment variables
     account_id = os.getenv('AA_ACCOUNT_ID')
     if account_id:
         session.cookies.set('aa_account_id2', account_id)
@@ -662,7 +580,6 @@ def debug_search(query, output_dir, verbose=False):
     else:
         logger.warning("No account ID found in .env file - some results may be limited")
     
-    # Search for the book
     search_url = construct_search_url(query)
     logger.info(f"Searching for query: {query}")
     logger.info(f"URL: {search_url}")
@@ -674,20 +591,16 @@ def debug_search(query, output_dir, verbose=False):
         logger.error(f"Search request failed: {e}")
         return 1
     
-    # Save the full HTML response for debugging
     debug_file = os.path.join(output_dir, "results.html")
     with open(debug_file, "w", encoding="utf-8") as f:
         f.write(response.text)
     logger.info(f"Saved full HTML response to {debug_file}")
     
-    # Count MD5 links directly from the HTML to verify
     md5_count = response.text.count('href="/md5/')
     logger.info(f"Direct count of 'href=\"/md5/' in HTML: {md5_count}")
     
-    # Extract search results
     books = extract_search_results(response.text)
     
-    # Print results
     print("\n===== DEBUG SEARCH RESULTS =====")
     print(f"Query: {query}")
     print(f"Total results found: {len(books)}")
@@ -704,12 +617,14 @@ def debug_search(query, output_dir, verbose=False):
     return 0
 
 def main():
-    # Get default output directory from environment variable (default to 'books/' if not set)
+    """Main entry point for the script."""
+    # Get default output directory from environment or use 'books/'
     default_output_dir = os.getenv('OUTPUT_DIR', 'books/')
     
+    # Set up command line argument parser
     parser = argparse.ArgumentParser(description='Download books from Anna\'s Archive by search query')
     
-    # Create a subparser for different modes
+    # Create subparsers for different operation modes
     subparsers = parser.add_subparsers(dest='mode', help='Operation mode')
     
     # Single download mode
@@ -717,43 +632,39 @@ def main():
     single_parser.add_argument('query', help='Search query (title, author, ISBN, etc.)')
     single_parser.add_argument('--interactive', '-i', action='store_true', help='Display selection menu for multiple results')
     
-    # Interactive mode
+    # Interactive mode for multiple downloads
     interactive_parser = subparsers.add_parser('interactive', help='Run in interactive mode to download multiple books')
     
-    # Debug mode - just print search results without downloading
+    # Debug mode for troubleshooting
     debug_parser = subparsers.add_parser('debug', help='Debug search results without downloading')
     debug_parser.add_argument('query', help='Search query to debug')
     
-    # Common arguments for all modes
+    # Add common arguments to all modes
     for subparser in [single_parser, interactive_parser, debug_parser]:
         subparser.add_argument('--output', '-o', default=default_output_dir, help='Directory to save downloaded books')
         subparser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose logging')
     
-    # Parse arguments
     args = parser.parse_args()
     
-    # Default to interactive mode if no mode is specified
+    # Show help if no mode specified
     if not args.mode:
         parser.print_help()
         return 1
     
-    # Set logging level based on verbosity
+    # Configure logging based on verbosity
     if args.verbose:
         logger.setLevel(logging.DEBUG)
     
     # Create output directory if it doesn't exist
     os.makedirs(args.output, exist_ok=True)
     
-    # Run in the selected mode
+    # Run the appropriate mode
     if args.mode == 'single':
-        # Download a single book
         success = download_book_by_query(args.query, args.output, args.interactive)
         return 0 if success else 1
     elif args.mode == 'interactive':
-        # Run in interactive mode
         return interactive_mode(args.output, args.verbose)
     elif args.mode == 'debug':
-        # Run in debug mode - just search and print results
         return debug_search(args.query, args.output, args.verbose)
     
     return 0
