@@ -1,10 +1,10 @@
 # Anna's Archive Downloader
 
-A Python script for automatically downloading books from Anna's Archive using search queries (ISBNs, titles, authors, etc).
+A Python script for automatically downloading books from Anna's Archive using search queries (titles, authors, ISBNs, etc).
 
 ## Features
 
-- Search Anna's Archive using any search query (ISBN, title, author, etc.)
+- Search Anna's Archive using any search query (title, author, ISBN, etc.)
 - Interactive selection from all available format options
 - Automatically download books via fast partner servers
 - Simple environment variable authentication
@@ -88,13 +88,13 @@ The script supports three primary modes of operation:
 Search for a book with a specific query and download it:
 
 ```bash
-python aapy.py single "9781250881205" --output books/
+python aapy.py single "Project Hail Mary" --output books/
 ```
 
-You can also search by title:
+You can also search by ISBN:
 
 ```bash
-python aapy.py single "Project Hail Mary"
+python aapy.py single "9781250881205"
 ```
 
 #### 2. Interactive Mode
@@ -136,7 +136,7 @@ usage: aapy.py {single,interactive,debug} [-h] [--output OUTPUT] [--verbose]
 Download books from Anna's Archive by search query
 
 modes:
-  single               Download a book by search query (ISBN, title, etc)
+  single               Download a book by search query (title, author, ISBN, etc)
   interactive          Run in interactive mode to download multiple books
   debug                Debug search results without downloading
 
@@ -175,6 +175,7 @@ To find your account ID:
 - The script will only search for and download books available through Anna's Archive directly (not external sources)
 - By default, it prioritizes EPUB format, then PDF, then MOBI
 - Search parameters are customizable by modifying the `DEFAULT_SEARCH_PARAMS` dictionary in the script
+- Downloaded books are saved to the "books/" directory by default (configurable in .env)
 
 ## Customizing Search Parameters
 
@@ -205,6 +206,18 @@ DEFAULT_SEARCH_PARAMS = {
     
     # ...and so on...
 }
+```
+
+## Quick Start
+
+For convenience, a `start.sh` script is included to quickly start the interactive mode:
+
+```bash
+# Make the script executable
+chmod +x start.sh
+
+# Run the script
+./start.sh
 ```
 
 ## Disclaimer

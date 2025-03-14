@@ -8,6 +8,7 @@ import logging
 from urllib.parse import urljoin
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
+from dotenv import load_dotenv
 
 # Set up logging
 logging.basicConfig(
@@ -19,49 +20,15 @@ logger = logging.getLogger(__name__)
 # Base URL for Anna's Archive
 BASE_URL = "https://annas-archive.org"
 
-def load_auth_headers(headers_file):
-    """
-    Load authentication headers from a JSON file.
-    """
-    try:
-        with open(headers_file, 'r') as f:
-            headers = json.load(f)
-            logger.info(f"Loaded authentication headers from {headers_file}")
-            return headers
-    except (json.JSONDecodeError, FileNotFoundError) as e:
-        logger.error(f"Error loading headers file: {e}")
-        return None
-
-def extract_auth_from_curl(curl_command):
-    """
-    Extract headers and cookies from a curl command string.
-    """
-    headers = {}
-    cookies = {}
-    
-    # Extract headers
-    header_matches = re.findall(r'-H\s+[\'"](.+?)[\'"]', curl_command)
-    for header in header_matches:
-        if ':' in header:
-            key, value = header.split(':', 1)
-            headers[key.strip()] = value.strip()
-    
-    # Extract cookies
-    cookie_matches = re.findall(r'-b\s+[\'"](.+?)[\'"]', curl_command)
-    for cookie_str in cookie_matches:
-        for cookie_pair in cookie_str.split(';'):
-            if '=' in cookie_pair:
-                key, value = cookie_pair.strip().split('=', 1)
-                cookies[key] = value
-    
-    return headers, cookies
+# Load environment variables
+load_dotenv()
 
 # Default search parameters
 DEFAULT_SEARCH_PARAMS = {
     # Basic search parameters
     'index': '',
     'page': '1',
-    'q': '',  # Will be set to ISBN
+    'q': '',  # Will be set to search query
     'display': '',
     'sort': '',
     
@@ -110,15 +77,15 @@ DEFAULT_SEARCH_PARAMS = {
     ]
 }
 
-def construct_search_url(isbn):
+def construct_search_url(query):
     """
-    Construct the search URL for a given ISBN using the defined search parameters.
+    Construct the search URL for a given query using the defined search parameters.
     """
     # Create a copy of the default params
     params = DEFAULT_SEARCH_PARAMS.copy()
     
-    # Set the ISBN as the query parameter
-    params['q'] = isbn
+    # Set the query as the search parameter
+    params['q'] = query
     
     # Build the query string
     query_parts = []
@@ -392,9 +359,9 @@ def clean_filename(text):
     """
     return re.sub(r'[\\/*?:"<>|]', '', text)
 
-def download_book_by_isbn(isbn, auth_file=None, curl_file=None, account_id=None, output_dir='.', interactive=False):
+def download_book_by_query(query, output_dir, interactive=False):
     """
-    Main function to download a book by ISBN.
+    Main function to download a book by search query.
     If interactive=True, will display a selection menu instead of auto-selecting.
     """
     # Set up session with authentication
@@ -406,34 +373,17 @@ def download_book_by_isbn(isbn, auth_file=None, curl_file=None, account_id=None,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
     })
     
-    # Load authentication: direct account ID takes precedence
+    # Get account ID from environment variables
+    account_id = os.getenv('AA_ACCOUNT_ID')
     if account_id:
-        # Set the aa_account_id2 cookie directly
         session.cookies.set('aa_account_id2', account_id)
-        logger.info("Using provided account ID for authentication")
-    elif auth_file:
-        headers = load_auth_headers(auth_file)
-        if headers:
-            session.headers.update(headers)
-    elif curl_file:
-        try:
-            with open(curl_file, 'r') as f:
-                curl_command = f.read()
-            headers, cookies = extract_auth_from_curl(curl_command)
-            session.headers.update(headers)
-            
-            # Add cookies to session
-            for key, value in cookies.items():
-                session.cookies.set(key, value)
-            
-            logger.info("Loaded authentication from curl command")
-        except Exception as e:
-            logger.error(f"Error loading curl file: {e}")
-            return False
+        logger.info("Using account ID from environment for authentication")
+    else:
+        logger.warning("No account ID found in .env file - some results may be limited")
     
     # Step 1: Search for the book
-    search_url = construct_search_url(isbn)
-    logger.info(f"Searching for ISBN: {isbn}")
+    search_url = construct_search_url(query)
+    logger.info(f"Searching for query: {query}")
     logger.info(f"URL: {search_url}")
     
     try:
@@ -446,7 +396,7 @@ def download_book_by_isbn(isbn, auth_file=None, curl_file=None, account_id=None,
     # Extract search results
     books = extract_search_results(response.text)
     if not books:
-        logger.error("No acceptable format books found for this ISBN")
+        logger.error("No acceptable format books found for this query")
         return False
     
     # Select the book to download
@@ -465,10 +415,10 @@ def download_book_by_isbn(isbn, auth_file=None, curl_file=None, account_id=None,
         if len(books) == 1:
             selected_book = books[0]
         else:
-            # Try to find an exact ISBN match
+            # Try to find an exact query match
             for book in books:
-                if isbn in str(book):
-                    logger.info(f"Found exact ISBN match: {book['title']}")
+                if query.lower() in book['title'].lower() or query.lower() in book['author'].lower():
+                    logger.info(f"Found exact query match: {book['title']}")
                     selected_book = book
                     break
             
@@ -549,9 +499,9 @@ def download_book_by_isbn(isbn, auth_file=None, curl_file=None, account_id=None,
         logger.error(f"Download failed: {e}")
         return False
 
-def interactive_mode(auth_file, curl_file, account_id, output_dir, verbose):
+def interactive_mode(output_dir, verbose):
     """
-    Run the downloader in interactive mode, allowing for multiple ISBNs to be processed.
+    Run the downloader in interactive mode, allowing for multiple queries to be processed.
     """
     if verbose:
         logger.setLevel(logging.DEBUG)
@@ -560,8 +510,8 @@ def interactive_mode(auth_file, curl_file, account_id, output_dir, verbose):
     
     print("\n=== Anna's Archive Interactive Downloader ===")
     print(f"Output directory: {output_dir}")
-    print("Enter ISBN numbers one at a time. Type 'exit', 'quit', or press Ctrl+C to exit.")
-    print("You can also paste multiple ISBNs (one per line).")
+    print("Enter search queries one at a time. Type 'exit', 'quit', or press Ctrl+C to exit.")
+    print("You can also paste multiple queries (one per line).")
     print("When multiple books are found, you'll get a selection menu.")
     print("=========================================\n")
     
@@ -574,47 +524,30 @@ def interactive_mode(auth_file, curl_file, account_id, output_dir, verbose):
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
     })
     
-    # Load authentication: direct account ID takes precedence
+    # Get account ID from environment variables
+    account_id = os.getenv('AA_ACCOUNT_ID')
     if account_id:
-        # Set the aa_account_id2 cookie directly
         session.cookies.set('aa_account_id2', account_id)
-        logger.info("Using provided account ID for authentication")
-    elif auth_file:
-        headers = load_auth_headers(auth_file)
-        if headers:
-            session.headers.update(headers)
-    elif curl_file:
-        try:
-            with open(curl_file, 'r') as f:
-                curl_command = f.read()
-            headers, cookies = extract_auth_from_curl(curl_command)
-            session.headers.update(headers)
-            
-            # Add cookies to session
-            for key, value in cookies.items():
-                session.cookies.set(key, value)
-            
-            logger.info("Loaded authentication from curl command")
-        except Exception as e:
-            logger.error(f"Error loading curl file: {e}")
-            return False
+        logger.info("Using account ID from environment for authentication")
+    else:
+        logger.warning("No account ID found in .env file - some results may be limited")
     
     try:
         while True:
-            isbn_input = input("\nEnter ISBN (or 'quit' to exit): ").strip()
+            query_input = input("\nEnter search query (or 'quit' to exit): ").strip()
             
-            if isbn_input.lower() in ['exit', 'quit', 'q']:
+            if query_input.lower() in ['exit', 'quit', 'q']:
                 print("Exiting...")
                 break
             
-            # Handle multiple ISBNs pasted at once (one per line)
-            isbns = [isbn.strip() for isbn in isbn_input.split('\n') if isbn.strip()]
+            # Handle multiple queries pasted at once (one per line)
+            queries = [query.strip() for query in query_input.split('\n') if query.strip()]
             
-            for isbn in isbns:
-                print(f"\nProcessing ISBN: {isbn}")
+            for query in queries:
+                print(f"\nProcessing query: {query}")
                 
                 # Step 1: Search for the book
-                search_url = construct_search_url(isbn)
+                search_url = construct_search_url(query)
                 logger.info(f"URL: {search_url}")
                 
                 try:
@@ -622,20 +555,20 @@ def interactive_mode(auth_file, curl_file, account_id, output_dir, verbose):
                     response.raise_for_status()
                 except requests.RequestException as e:
                     logger.error(f"Search request failed: {e}")
-                    print(f"❌ Search failed for ISBN: {isbn}")
+                    print(f"❌ Search failed for query: {query}")
                     continue
                 
                 # Extract search results
                 books = extract_search_results(response.text)
                 
                 if not books:
-                    print(f"❌ No EPUB books found for ISBN: {isbn}")
+                    print(f"❌ No books found for query: {query}")
                     continue
                 
                 # Display selection menu and get user's choice
                 selected_idx = display_selection_menu(books)
                 if selected_idx is None:
-                    print(f"Download cancelled for ISBN: {isbn}")
+                    print(f"Download cancelled for query: {query}")
                     continue
                 
                 selected_book = books[selected_idx]
@@ -650,7 +583,7 @@ def interactive_mode(auth_file, curl_file, account_id, output_dir, verbose):
                     response.raise_for_status()
                 except requests.RequestException as e:
                     logger.error(f"Book page request failed: {e}")
-                    print(f"❌ Failed to access book page for ISBN: {isbn}")
+                    print(f"❌ Failed to access book page for query: {query}")
                     continue
                 
                 # Step 3: Extract the fast download link
@@ -669,20 +602,26 @@ def interactive_mode(auth_file, curl_file, account_id, output_dir, verbose):
                     response.raise_for_status()
                     
                     # Determine filename
-                    filename = get_filename_from_headers(response.headers)
+                    filename = get_filename_from_headers(response.headers, selected_book['format_priority'])
                     if not filename:
                         # Create filename from book info
                         title = clean_filename(selected_book['title'])
                         author = clean_filename(selected_book.get('author', 'Unknown'))
                         
-                        # Always use .epub extension
-                        filename = f"{title} - {author}.epub"
+                        # Add extension based on format priority
+                        extension = ".epub"  # Default
+                        if selected_book['format_priority'] == 2:
+                            extension = ".pdf"
+                        elif selected_book['format_priority'] == 1:
+                            extension = ".mobi"
+                        
+                        filename = f"{title} - {author}{extension}"
                     
                     output_path = os.path.join(output_dir, filename)
                     
                     # Download the actual file
                     print(f"Downloading to: {output_path}")
-                    download_success = download_file(session, download_url, output_path)
+                    download_success = download_file(session, download_url, output_path, selected_book['format_priority'])
                     if download_success:
                         print(f"✅ Successfully downloaded: {filename}")
                     else:
@@ -697,61 +636,7 @@ def interactive_mode(auth_file, curl_file, account_id, output_dir, verbose):
     
     return 0
 
-def main():
-    parser = argparse.ArgumentParser(description='Download books from Anna\'s Archive by ISBN')
-    
-    # Create a subparser for different modes
-    subparsers = parser.add_subparsers(dest='mode', help='Operation mode')
-    
-    # Single download mode
-    single_parser = subparsers.add_parser('single', help='Download a single book')
-    single_parser.add_argument('isbn', help='ISBN of the book to download')
-    single_parser.add_argument('--interactive', '-i', action='store_true', help='Display selection menu for multiple results')
-    
-    # Interactive mode
-    interactive_parser = subparsers.add_parser('interactive', help='Run in interactive mode to download multiple books')
-    
-    # Debug mode - just print search results without downloading
-    debug_parser = subparsers.add_parser('debug', help='Debug search results without downloading')
-    debug_parser.add_argument('isbn', help='ISBN to search for debugging')
-    
-    # Common arguments for all modes
-    for subparser in [single_parser, interactive_parser, debug_parser]:
-        auth_group = subparser.add_mutually_exclusive_group()
-        auth_group.add_argument('--auth', help='Path to JSON file with authentication headers')
-        auth_group.add_argument('--curl', help='Path to file containing curl command with authentication')
-        auth_group.add_argument('--account-id', help='Anna\'s Archive account ID cookie value')
-        
-        subparser.add_argument('--output', '-o', default='.', help='Directory to save downloaded books')
-        subparser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose logging')
-    
-    # Parse arguments
-    args = parser.parse_args()
-    
-    # Default to interactive mode if no mode is specified
-    if not args.mode:
-        parser.print_help()
-        return 1
-    
-    # Set logging level based on verbosity
-    if args.verbose:
-        logger.setLevel(logging.DEBUG)
-    
-    # Run in the selected mode
-    if args.mode == 'single':
-        # Download a single book
-        success = download_book_by_isbn(args.isbn, args.auth, args.curl, args.account_id, args.output, args.interactive)
-        return 0 if success else 1
-    elif args.mode == 'interactive':
-        # Run in interactive mode
-        return interactive_mode(args.auth, args.curl, args.account_id, args.output, args.verbose)
-    elif args.mode == 'debug':
-        # Run in debug mode - just search and print results
-        return debug_search(args.isbn, args.auth, args.curl, args.account_id, args.verbose)
-    
-    return 0
-
-def debug_search(isbn, auth_file=None, curl_file=None, account_id=None, verbose=False):
+def debug_search(query, output_dir, verbose=False):
     """
     Debug function to just search and print results without downloading.
     """
@@ -769,28 +654,17 @@ def debug_search(isbn, auth_file=None, curl_file=None, account_id=None, verbose=
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
     })
     
-    # Load authentication
+    # Get account ID from environment variables
+    account_id = os.getenv('AA_ACCOUNT_ID')
     if account_id:
         session.cookies.set('aa_account_id2', account_id)
-    elif auth_file:
-        headers = load_auth_headers(auth_file)
-        if headers:
-            session.headers.update(headers)
-    elif curl_file:
-        try:
-            with open(curl_file, 'r') as f:
-                curl_command = f.read()
-            headers, cookies = extract_auth_from_curl(curl_command)
-            session.headers.update(headers)
-            for key, value in cookies.items():
-                session.cookies.set(key, value)
-        except Exception as e:
-            logger.error(f"Error loading curl file: {e}")
-            return 1
+        logger.info("Using account ID from environment for authentication")
+    else:
+        logger.warning("No account ID found in .env file - some results may be limited")
     
     # Search for the book
-    search_url = construct_search_url(isbn)
-    logger.info(f"Searching for ISBN: {isbn}")
+    search_url = construct_search_url(query)
+    logger.info(f"Searching for query: {query}")
     logger.info(f"URL: {search_url}")
     
     try:
@@ -801,9 +675,10 @@ def debug_search(isbn, auth_file=None, curl_file=None, account_id=None, verbose=
         return 1
     
     # Save the full HTML response for debugging
-    with open(f"results.html", "w", encoding="utf-8") as f:
+    debug_file = os.path.join(output_dir, "results.html")
+    with open(debug_file, "w", encoding="utf-8") as f:
         f.write(response.text)
-    logger.info(f"Saved full HTML response to results.html")
+    logger.info(f"Saved full HTML response to {debug_file}")
     
     # Count MD5 links directly from the HTML to verify
     md5_count = response.text.count('href="/md5/')
@@ -814,8 +689,8 @@ def debug_search(isbn, auth_file=None, curl_file=None, account_id=None, verbose=
     
     # Print results
     print("\n===== DEBUG SEARCH RESULTS =====")
-    print(f"ISBN: {isbn}")
-    print(f"Total EPUB results found: {len(books)}")
+    print(f"Query: {query}")
+    print(f"Total results found: {len(books)}")
     print(f"Raw MD5 link count in HTML: {md5_count}")
     
     for i, book in enumerate(books):
@@ -825,6 +700,61 @@ def debug_search(isbn, auth_file=None, curl_file=None, account_id=None, verbose=
         print(f"  Format: {book['format']}")
         print(f"  Link: {book['link']}")
         print(f"  Partial Match: {book['is_partial_match']}")
+    
+    return 0
+
+def main():
+    # Get default output directory from environment variable (default to 'books/' if not set)
+    default_output_dir = os.getenv('OUTPUT_DIR', 'books/')
+    
+    parser = argparse.ArgumentParser(description='Download books from Anna\'s Archive by search query')
+    
+    # Create a subparser for different modes
+    subparsers = parser.add_subparsers(dest='mode', help='Operation mode')
+    
+    # Single download mode
+    single_parser = subparsers.add_parser('single', help='Download a single book')
+    single_parser.add_argument('query', help='Search query (title, author, ISBN, etc.)')
+    single_parser.add_argument('--interactive', '-i', action='store_true', help='Display selection menu for multiple results')
+    
+    # Interactive mode
+    interactive_parser = subparsers.add_parser('interactive', help='Run in interactive mode to download multiple books')
+    
+    # Debug mode - just print search results without downloading
+    debug_parser = subparsers.add_parser('debug', help='Debug search results without downloading')
+    debug_parser.add_argument('query', help='Search query to debug')
+    
+    # Common arguments for all modes
+    for subparser in [single_parser, interactive_parser, debug_parser]:
+        subparser.add_argument('--output', '-o', default=default_output_dir, help='Directory to save downloaded books')
+        subparser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose logging')
+    
+    # Parse arguments
+    args = parser.parse_args()
+    
+    # Default to interactive mode if no mode is specified
+    if not args.mode:
+        parser.print_help()
+        return 1
+    
+    # Set logging level based on verbosity
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(args.output, exist_ok=True)
+    
+    # Run in the selected mode
+    if args.mode == 'single':
+        # Download a single book
+        success = download_book_by_query(args.query, args.output, args.interactive)
+        return 0 if success else 1
+    elif args.mode == 'interactive':
+        # Run in interactive mode
+        return interactive_mode(args.output, args.verbose)
+    elif args.mode == 'debug':
+        # Run in debug mode - just search and print results
+        return debug_search(args.query, args.output, args.verbose)
     
     return 0
 
