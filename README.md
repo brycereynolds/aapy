@@ -9,6 +9,7 @@ A Python script for automatically downloading books from Anna's Archive using se
 - Automatically download books via fast partner servers
 - Simple environment variable authentication
 - Detailed logging and progress reporting
+- **NEW:** Customizable format priorities and preferences
 
 ## Requirements
 
@@ -128,10 +129,34 @@ All modes present an interactive selection menu that shows:
 
 This allows you to make an informed choice even when only one result is found.
 
+### Format Customization
+
+You can now specify which formats you want to search for and download using the `--formats` option:
+
+```bash
+# Only search for and download EPUBs
+python aapy.py single "Project Hail Mary" --formats epub
+
+# Prioritize PDF over EPUB (order matters)
+python aapy.py interactive --formats pdf,epub,mobi
+
+# Include additional formats like FB2
+python aapy.py interactive --formats epub,pdf,mobi,fb2
+```
+
+Available formats:
+- `epub` - EPUB format (default priority: highest)
+- `pdf` - PDF format (default priority: medium)
+- `mobi` - MOBI format (default priority: low)
+- `fb2` - FB2 format (disabled by default)
+- `cbr` - CBR format (disabled by default)
+
+The order you specify formats determines their priority in search results.
+
 ### Command Line Options
 
 ```
-usage: aapy.py {single,interactive,debug} [-h] [--output OUTPUT] [--verbose]
+usage: aapy.py {single,interactive,debug} [-h] [--output OUTPUT] [--verbose] [--formats FORMATS]
 
 Download books from Anna's Archive by search query
 
@@ -145,6 +170,8 @@ options:
   --output OUTPUT, -o OUTPUT
                         Directory to save downloaded books (overrides OUTPUT_DIR in .env)
   --verbose, -v         Enable verbose logging
+  --formats FORMATS, -f FORMATS
+                        Comma-separated list of enabled formats (e.g., "epub,pdf,mobi")
 ```
 
 ### Authentication
@@ -170,43 +197,21 @@ To find your account ID:
 2. **Selection Phase**: Presents an interactive menu of all matching books with format details
 3. **Download Phase**: Finds the fastest download link and saves the book file
 
+## Format Prioritization System
+
+The script now uses a dedicated configuration system for handling file formats:
+
+- Each format has metadata including priority, icon, extension, and display name
+- Formats are prioritized based on their assigned priority values
+- Results are sorted by priority, so preferred formats appear first
+- You can customize which formats are enabled and their priorities via command line
+
 ## Notes
 
 - The script will only search for and download books available through Anna's Archive directly (not external sources)
 - By default, it prioritizes EPUB format, then PDF, then MOBI
 - Search parameters are customizable by modifying the `DEFAULT_SEARCH_PARAMS` dictionary in the script
 - Downloaded books are saved to the "books/" directory by default (configurable in .env)
-
-## Customizing Search Parameters
-
-The script uses a predefined set of search parameters that you can modify in the code:
-
-```python
-DEFAULT_SEARCH_PARAMS = {
-    # Basic search parameters
-    'index': '',
-    'page': '1',
-    'q': '',  # Will be set to your search query
-    'display': '',
-    'sort': '',
-    
-    # Content type parameters
-    'content': [
-        'anti__book_nonfiction',  # Exclude non-fiction
-        'book_fiction',           # Include fiction
-        # ...other content parameters...
-    ],
-    
-    # File format parameters
-    'ext': [
-        'anti__pdf',   # Exclude PDF
-        'epub',        # Include EPUB
-        # ...other format parameters...
-    ],
-    
-    # ...and so on...
-}
-```
 
 ## Quick Start
 

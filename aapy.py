@@ -20,6 +20,109 @@ BASE_URL = "https://annas-archive.org"
 
 load_dotenv()
 
+class FormatConfig:
+    """Configuration for file format priorities, extensions, and display information."""
+    
+    # Format definitions with metadata
+    FORMATS = {
+        'epub': {
+            'priority': 100,
+            'extension': '.epub',
+            'icon': '📙',
+            'display_name': 'EPUB',
+            'key': 'epub',
+            'content_type': 'application/epub+zip'
+        },
+        'pdf': {
+            'priority': 80,
+            'extension': '.pdf',
+            'icon': '📑',
+            'display_name': 'PDF',
+            'key': 'pdf',
+            'content_type': 'application/pdf'
+        },
+        'mobi': {
+            'priority': 60,
+            'extension': '.mobi',
+            'icon': '📕',
+            'display_name': 'MOBI',
+            'key': 'mobi',
+            'content_type': 'application/x-mobipocket-ebook'
+        },
+        'fb2': {
+            'priority': 40,
+            'extension': '.fb2',
+            'icon': '📄',
+            'display_name': 'FB2',
+            'key': 'fb2',
+            'content_type': 'application/fb2'
+        },
+        'cbr': {
+            'priority': 20,
+            'extension': '.cbr',
+            'icon': '🗃️',
+            'display_name': 'CBR',
+            'key': 'cbr',
+            'content_type': 'application/x-cbr'
+        }
+    }
+    
+    # Default enabled formats in order of preference
+    DEFAULT_ENABLED = ['epub', 'pdf', 'mobi']
+    
+    @classmethod
+    def get_enabled_formats(cls, custom_enabled=None):
+        """Get list of enabled format keys."""
+        return custom_enabled or cls.DEFAULT_ENABLED
+    
+    @classmethod
+    def get_search_params(cls, enabled_formats=None):
+        """Get search parameters for the specified enabled formats."""
+        enabled = cls.get_enabled_formats(enabled_formats)
+        params = []
+        
+        # Add all formats with appropriate parameter
+        for fmt, data in cls.FORMATS.items():
+            key = data['key']
+            # If format is enabled, include it; otherwise exclude it
+            if fmt in enabled:
+                params.append(key)
+            else:
+                params.append(f'anti__{key}')
+        
+        return params
+    
+    @classmethod
+    def detect_format(cls, text):
+        """Detect format from text and return format key and data."""
+        text = text.lower()
+        for fmt, data in cls.FORMATS.items():
+            if fmt in text:
+                return fmt, data
+        return None, None
+    
+    @classmethod
+    def get_extension(cls, format_key):
+        """Get file extension for a format."""
+        if format_key in cls.FORMATS:
+            return cls.FORMATS[format_key]['extension']
+        return '.unknown'
+    
+    @classmethod
+    def get_available_formats(cls):
+        """Get a list of all available format keys."""
+        return list(cls.FORMATS.keys())
+    
+    @classmethod
+    def format_exists(cls, format_key):
+        """Check if a format exists in the configuration."""
+        return format_key in cls.FORMATS
+    
+    @classmethod
+    def validate_formats(cls, format_list):
+        """Validate a list of format keys and return only valid ones."""
+        return [fmt for fmt in format_list if cls.format_exists(fmt)]
+
 DEFAULT_SEARCH_PARAMS = {
     'index': '',
     'page': '1',
@@ -38,13 +141,7 @@ DEFAULT_SEARCH_PARAMS = {
         'anti__musical_score'     # Exclude musical scores
     ],
     
-    'ext': [
-        'anti__pdf',   # Exclude PDF
-        'epub',        # Include EPUB
-        'anti__mobi',  # Exclude MOBI
-        'anti__fb2',   # Exclude FB2
-        'anti__cbr'    # Exclude CBR
-    ],
+    'ext': FormatConfig.get_search_params(),
     
     'acc': [
         'aa_download',                      # Include direct downloads
@@ -68,10 +165,14 @@ DEFAULT_SEARCH_PARAMS = {
     ]
 }
 
-def construct_search_url(query):
+def construct_search_url(query, enabled_formats=None):
     """Construct the search URL for a given query using the defined search parameters."""
     params = DEFAULT_SEARCH_PARAMS.copy()
     params['q'] = query
+    
+    # Update formats if custom formats are provided
+    if enabled_formats:
+        params['ext'] = FormatConfig.get_search_params(enabled_formats)
     
     query_parts = []
     for key, value in params.items():
@@ -112,30 +213,15 @@ def extract_search_results(html_content):
         href = link.get('href', '')
         all_text = link.get_text(separator=' ', strip=True)
         
-        # Determine format priority based on file type
-        format_priority = 0
-        if 'epub' in all_text.lower():
-            format_priority = 3  # Highest priority
-        elif 'pdf' in all_text.lower():
-            format_priority = 2  # Medium priority
-        elif 'mobi' in all_text.lower():
-            format_priority = 1  # Lower priority
+        # Detect format using the FormatConfig class
+        format_key, format_data = FormatConfig.detect_format(all_text)
         
         # Skip unsupported formats
-        if format_priority == 0:
+        if not format_key or format_key not in FormatConfig.get_enabled_formats():
             logger.info(f"Skipping unsupported format in result {i+1}")
             continue
             
-        # Set human-readable format type
-        format_type = "Unknown"
-        if format_priority == 3:
-            format_type = "EPUB"
-        elif format_priority == 2:
-            format_type = "PDF"
-        elif format_priority == 1:
-            format_type = "MOBI"
-        
-        logger.info(f"Found {format_type} result {i+1}: {href}")
+        logger.info(f"Found {format_data['display_name']} result {i+1}: {href}")
         
         # Extract book metadata from the link
         title = "Unknown Title"
@@ -158,7 +244,10 @@ def extract_search_results(html_content):
             'title': title,
             'author': author,
             'format': format_text,
-            'format_priority': format_priority,
+            'format_key': format_key,
+            'format_priority': format_data['priority'],
+            'format_icon': format_data['icon'],
+            'format_display': format_data['display_name'],
             'original_index': i,
             'is_partial_match': partial_matches_count is not None
         }
@@ -180,11 +269,14 @@ def display_selection_menu(books):
         print(f"Only one result found: {books[0]['title']}")
         return 0
     
-    epub_count = sum(1 for book in books if book['format_priority'] == 3)
-    pdf_count = sum(1 for book in books if book['format_priority'] == 2)
-    mobi_count = sum(1 for book in books if book['format_priority'] == 1)
+    # Count formats using the new structure
+    format_counts = {}
+    for book in books:
+        format_display = book['format_display']
+        format_counts[format_display] = format_counts.get(format_display, 0) + 1
     
-    print(f"\nFound {len(books)} results ({epub_count} EPUB, {pdf_count} PDF, {mobi_count} MOBI):")
+    format_summary = ", ".join(f"{count} {fmt}" for fmt, count in format_counts.items())
+    print(f"\nFound {len(books)} results ({format_summary}):")
     
     choices = []
     for i, book in enumerate(books):
@@ -195,16 +287,7 @@ def display_selection_menu(books):
                 size = f"{size_match.group(1)}MB"
         
         display_name = f"{book['title']} by {book['author']}"
-        
-        format_icon = "📄"  # Default
-        if book['format_priority'] == 3:
-            format_icon = "📙"  # EPUB
-        elif book['format_priority'] == 2:
-            format_icon = "📑"  # PDF
-        elif book['format_priority'] == 1:
-            format_icon = "📕"  # MOBI
-        
-        details = f"\n   {format_icon} Format: {book['format']}\n   Size: {size}"
+        details = f"\n   {book['format_icon']} Format: {book['format']}\n   Size: {size}"
         
         choices.append(Choice(value=i, name=f"{display_name}{details}"))
     
@@ -236,25 +319,19 @@ def extract_fast_download_link(html_content):
     
     return None
 
-def download_file(session, url, output_path, format_priority=None):
+def download_file(session, url, output_path, format_key=None):
     """Download a file with progress reporting."""
     response = session.get(url, stream=True)
     response.raise_for_status()
     
     content_type = response.headers.get('content-type', '').lower()
     
-    expected_format = None
-    if format_priority == 3:
-        expected_format = "epub"
-    elif format_priority == 2:
-        expected_format = "pdf"
-    elif format_priority == 1:
-        expected_format = "mobi"
-    
-    if expected_format and expected_format not in content_type and 'octet-stream' not in content_type:
-        content_disp = response.headers.get('content-disposition', '').lower()
-        if expected_format not in content_disp and 'filename=' in content_disp:
-            logger.warning(f"Content may not match expected format {expected_format}: {content_type}")
+    if format_key and format_key in FormatConfig.FORMATS:
+        expected_content_type = FormatConfig.FORMATS[format_key]['content_type']
+        if expected_content_type not in content_type and 'octet-stream' not in content_type:
+            content_disp = response.headers.get('content-disposition', '').lower()
+            if format_key not in content_disp and 'filename=' in content_disp:
+                logger.warning(f"Content may not match expected format {format_key}: {content_type}")
     
     total_size = int(response.headers.get('content-length', 0))
     
@@ -274,21 +351,17 @@ def download_file(session, url, output_path, format_priority=None):
     print()
     return True
 
-def get_filename_from_headers(headers, format_priority=None):
+def get_filename_from_headers(headers, format_key=None):
     """Extract filename from Content-Disposition header."""
     if 'content-disposition' in headers:
         match = re.search(r'filename="?([^"]+)"?', headers['content-disposition'])
         if match:
             filename = match.group(1)
             
-            if format_priority:
+            if format_key and format_key in FormatConfig.FORMATS:
                 base_name = os.path.splitext(filename)[0]
-                if format_priority == 3:  # EPUB
-                    filename = f"{base_name}.epub"
-                elif format_priority == 2:  # PDF
-                    filename = f"{base_name}.pdf"
-                elif format_priority == 1:  # MOBI
-                    filename = f"{base_name}.mobi"
+                extension = FormatConfig.get_extension(format_key)
+                filename = f"{base_name}{extension}"
                 logger.info(f"Set filename extension based on format: {filename}")
                 
             return filename
@@ -298,7 +371,7 @@ def clean_filename(text):
     """Clean a string to make it suitable for a filename."""
     return re.sub(r'[\\/*?:"<>|]', '', text)
 
-def download_book_by_query(query, output_dir, interactive=False):
+def download_book_by_query(query, output_dir, interactive=False, enabled_formats=None):
     """Main function to download a book by search query."""
     # Set up session with user agent and authentication
     session = requests.Session()
@@ -316,7 +389,7 @@ def download_book_by_query(query, output_dir, interactive=False):
         logger.warning("No account ID found in .env file - some results may be limited")
     
     # Search for books matching query
-    search_url = construct_search_url(query)
+    search_url = construct_search_url(query, enabled_formats)
     logger.info(f"Searching for query: {query}")
     logger.info(f"URL: {search_url}")
     
@@ -362,15 +435,7 @@ def download_book_by_query(query, output_dir, interactive=False):
     is_partial_match = selected_book.get('is_partial_match', False)
     match_type = "partial match" if is_partial_match else "direct match"
     
-    format_type = "Unknown"
-    if selected_book['format_priority'] == 3:
-        format_type = "EPUB"
-    elif selected_book['format_priority'] == 2:
-        format_type = "PDF"
-    elif selected_book['format_priority'] == 1:
-        format_type = "MOBI"
-    
-    logger.info(f"Selected {format_type} book ({match_type}): {selected_book['title']} by {selected_book.get('author', 'Unknown')}")
+    logger.info(f"Selected {selected_book['format_display']} book ({match_type}): {selected_book['title']} by {selected_book.get('author', 'Unknown')}")
     
     # Navigate to book page to find download link
     book_url = urljoin(BASE_URL, selected_book['link'])
@@ -398,16 +463,12 @@ def download_book_by_query(query, output_dir, interactive=False):
         response.raise_for_status()
         
         # Determine filename, either from headers or construct from book info
-        filename = get_filename_from_headers(response.headers, selected_book['format_priority'])
+        filename = get_filename_from_headers(response.headers, selected_book['format_key'])
         if not filename:
             title = clean_filename(selected_book['title'])
             author = clean_filename(selected_book.get('author', 'Unknown'))
             
-            extension = ".epub"
-            if selected_book['format_priority'] == 2:
-                extension = ".pdf"
-            elif selected_book['format_priority'] == 1:
-                extension = ".mobi"
+            extension = FormatConfig.get_extension(selected_book['format_key'])
             
             filename = f"{title} - {author}{extension}"
         
@@ -415,7 +476,7 @@ def download_book_by_query(query, output_dir, interactive=False):
         logger.info(f"Downloading to: {output_path}")
         
         # Download the actual file
-        download_success = download_file(session, download_url, output_path, selected_book['format_priority'])
+        download_success = download_file(session, download_url, output_path, selected_book['format_key'])
         if download_success:
             logger.info(f"Successfully downloaded: {filename}")
             return True
@@ -427,7 +488,7 @@ def download_book_by_query(query, output_dir, interactive=False):
         logger.error(f"Download failed: {e}")
         return False
 
-def interactive_mode(output_dir, verbose):
+def interactive_mode(output_dir, verbose, enabled_formats=None):
     """Run the downloader in interactive mode, allowing for multiple queries to be processed."""
     # Configure logging based on verbosity
     if verbose:
@@ -438,6 +499,14 @@ def interactive_mode(output_dir, verbose):
     # Display welcome message and instructions
     print("\n=== Anna's Archive Interactive Downloader ===")
     print(f"Output directory: {output_dir}")
+    
+    if enabled_formats:
+        format_names = [FormatConfig.FORMATS[fmt]['display_name'] for fmt in enabled_formats if fmt in FormatConfig.FORMATS]
+        print(f"Enabled formats: {', '.join(format_names)}")
+    else:
+        format_names = [FormatConfig.FORMATS[fmt]['display_name'] for fmt in FormatConfig.DEFAULT_ENABLED]
+        print(f"Default formats: {', '.join(format_names)}")
+    
     print("Enter search queries one at a time. Type 'exit', 'quit', or press Ctrl+C to exit.")
     print("You can also paste multiple queries (one per line).")
     print("When multiple books are found, you'll get a selection menu.")
@@ -474,7 +543,7 @@ def interactive_mode(output_dir, verbose):
                 print(f"\nProcessing query: {query}")
                 
                 # Search for books matching query
-                search_url = construct_search_url(query)
+                search_url = construct_search_url(query, enabled_formats)
                 logger.info(f"URL: {search_url}")
                 
                 try:
@@ -527,16 +596,12 @@ def interactive_mode(output_dir, verbose):
                     response.raise_for_status()
                     
                     # Determine filename, either from headers or construct from book info
-                    filename = get_filename_from_headers(response.headers, selected_book['format_priority'])
+                    filename = get_filename_from_headers(response.headers, selected_book['format_key'])
                     if not filename:
                         title = clean_filename(selected_book['title'])
                         author = clean_filename(selected_book.get('author', 'Unknown'))
                         
-                        extension = ".epub"
-                        if selected_book['format_priority'] == 2:
-                            extension = ".pdf"
-                        elif selected_book['format_priority'] == 1:
-                            extension = ".mobi"
+                        extension = FormatConfig.get_extension(selected_book['format_key'])
                         
                         filename = f"{title} - {author}{extension}"
                     
@@ -544,7 +609,7 @@ def interactive_mode(output_dir, verbose):
                     
                     # Download the actual file
                     print(f"Downloading to: {output_path}")
-                    download_success = download_file(session, download_url, output_path, selected_book['format_priority'])
+                    download_success = download_file(session, download_url, output_path, selected_book['format_key'])
                     if download_success:
                         print(f"✅ Successfully downloaded: {filename}")
                     else:
@@ -559,7 +624,7 @@ def interactive_mode(output_dir, verbose):
     
     return 0
 
-def debug_search(query, output_dir, verbose=False):
+def debug_search(query, output_dir, verbose=False, enabled_formats=None):
     """Debug function to just search and print results without downloading."""
     if verbose:
         logger.setLevel(logging.DEBUG)
@@ -580,7 +645,7 @@ def debug_search(query, output_dir, verbose=False):
     else:
         logger.warning("No account ID found in .env file - some results may be limited")
     
-    search_url = construct_search_url(query)
+    search_url = construct_search_url(query, enabled_formats)
     logger.info(f"Searching for query: {query}")
     logger.info(f"URL: {search_url}")
     
@@ -606,11 +671,15 @@ def debug_search(query, output_dir, verbose=False):
     print(f"Total results found: {len(books)}")
     print(f"Raw MD5 link count in HTML: {md5_count}")
     
+    if enabled_formats:
+        print(f"Enabled formats: {', '.join(enabled_formats)}")
+    
     for i, book in enumerate(books):
         print(f"\nResult {i+1}:")
         print(f"  Title: {book['title']}")
         print(f"  Author: {book['author']}")
-        print(f"  Format: {book['format']}")
+        print(f"  Format: {book['format']} ({book['format_display']})")
+        print(f"  Priority: {book['format_priority']}")
         print(f"  Link: {book['link']}")
         print(f"  Partial Match: {book['is_partial_match']}")
     
@@ -643,6 +712,7 @@ def main():
     for subparser in [single_parser, interactive_parser, debug_parser]:
         subparser.add_argument('--output', '-o', default=default_output_dir, help='Directory to save downloaded books')
         subparser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose logging')
+        subparser.add_argument('--formats', '-f', help='Comma-separated list of enabled formats (e.g., "epub,pdf,mobi")')
     
     args = parser.parse_args()
     
@@ -658,14 +728,28 @@ def main():
     # Create output directory if it doesn't exist
     os.makedirs(args.output, exist_ok=True)
     
+    # Process format preferences if specified
+    enabled_formats = None
+    if hasattr(args, 'formats') and args.formats:
+        format_list = [fmt.strip().lower() for fmt in args.formats.split(',')]
+        valid_formats = FormatConfig.validate_formats(format_list)
+        
+        if not valid_formats:
+            available_formats = FormatConfig.get_available_formats()
+            logger.error(f"No valid formats specified. Available formats: {', '.join(available_formats)}")
+            return 1
+        
+        enabled_formats = valid_formats
+        logger.info(f"Using custom format preferences: {', '.join(enabled_formats)}")
+    
     # Run the appropriate mode
     if args.mode == 'single':
-        success = download_book_by_query(args.query, args.output, args.interactive)
+        success = download_book_by_query(args.query, args.output, args.interactive, enabled_formats)
         return 0 if success else 1
     elif args.mode == 'interactive':
-        return interactive_mode(args.output, args.verbose)
+        return interactive_mode(args.output, args.verbose, enabled_formats)
     elif args.mode == 'debug':
-        return debug_search(args.query, args.output, args.verbose)
+        return debug_search(args.query, args.output, args.verbose, enabled_formats)
     
     return 0
 
