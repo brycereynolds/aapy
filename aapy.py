@@ -7,10 +7,19 @@ import re
 import sys
 import copy
 import logging
+import time
+from datetime import timedelta
 from urllib.parse import urljoin
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
 from dotenv import load_dotenv
+from threading import Thread
+from requests.exceptions import RequestException, Timeout, ConnectionError
+from contextlib import contextmanager
+from colorama import init, Fore, Back, Style
+
+# Initialize colorama for cross-platform colored terminal text
+init(autoreset=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,6 +30,128 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://annas-archive.org"
 
 load_dotenv()
+
+class ProgressIndicator:
+    """Simple spinner animation for CLI to indicate ongoing operations."""
+    
+    def __init__(self, message):
+        self.message = message
+        self.running = False
+        self.thread = None
+        self.frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+        self.index = 0
+    
+    def _spin(self):
+        while self.running:
+            frame = self.frames[self.index % len(self.frames)]
+            sys.stdout.write(f"\r{self.message} {frame} ")
+            sys.stdout.flush()
+            self.index += 1
+            time.sleep(0.1)
+    
+    def start(self):
+        self.running = True
+        self.thread = Thread(target=self._spin)
+        self.thread.daemon = True
+        self.thread.start()
+    
+    def stop(self, clear=True):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=0.5)
+        if clear:
+            sys.stdout.write(f"\r{' ' * (len(self.message) + 10)}\r")
+            sys.stdout.flush()
+
+@contextmanager
+def progress_spinner(message):
+    """Context manager for showing a spinner during operations."""
+    spinner = ProgressIndicator(message)
+    spinner.start()
+    try:
+        yield
+    finally:
+        spinner.stop()
+
+def robust_request(session, url, method="get", stream=False, timeout=(10, 60), retries=3, 
+                  retry_delay=2, message="Processing request", show_spinner=True):
+    """
+    Makes a robust HTTP request with timeout, retries, and visual feedback.
+    
+    Args:
+        session: requests.Session object to use
+        url: URL to request
+        method: HTTP method (get, head, post)
+        stream: Whether to stream the response
+        timeout: (connect_timeout, read_timeout) in seconds
+        retries: Number of retry attempts
+        retry_delay: Seconds to wait between retries
+        message: Message to display during request
+        show_spinner: Whether to show the spinner animation
+    
+    Returns:
+        requests.Response object or None if all attempts fail
+    """
+    start_time = time.time()
+    spinner = None
+    
+    if show_spinner:
+        spinner = ProgressIndicator(message)
+        spinner.start()
+    
+    for attempt in range(1, retries + 1):
+        try:
+            if spinner:
+                spinner.message = f"{message} (attempt {attempt}/{retries})"
+                
+            if method.lower() == "get":
+                response = session.get(url, stream=stream, timeout=timeout)
+            elif method.lower() == "head":
+                response = session.head(url, timeout=timeout)
+            elif method.lower() == "post":
+                response = session.post(url, stream=stream, timeout=timeout)
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
+            
+            response.raise_for_status()
+            elapsed = time.time() - start_time
+            
+            if spinner:
+                spinner.stop()
+                
+            logger.info(f"Request completed in {elapsed:.2f}s")
+            return response
+            
+        except Timeout as e:
+            logger.warning(f"Request timeout (attempt {attempt}/{retries}): {e}")
+            if attempt == retries:
+                if spinner:
+                    spinner.stop()
+                logger.error(f"Failed after {retries} attempts due to timeout")
+                return None
+            time.sleep(retry_delay)
+            
+        except ConnectionError as e:
+            logger.warning(f"Connection error (attempt {attempt}/{retries}): {e}")
+            if attempt == retries:
+                if spinner:
+                    spinner.stop()
+                logger.error(f"Failed after {retries} attempts due to connection error")
+                return None
+            time.sleep(retry_delay)
+            
+        except RequestException as e:
+            logger.warning(f"Request error (attempt {attempt}/{retries}): {e}")
+            if attempt == retries:
+                if spinner:
+                    spinner.stop()
+                logger.error(f"Failed after {retries} attempts due to request error")
+                return None
+            time.sleep(retry_delay)
+    
+    if spinner:
+        spinner.stop()
+    return None
 
 def load_config(config_path="config.json"):
     """Load configuration from a JSON file."""
@@ -137,6 +268,12 @@ def apply_command_line_overrides(config, args):
     if hasattr(args, 'output') and args.output:
         cfg['output_dir'] = args.output
     
+    # Save color preference
+    if hasattr(args, 'no_color'):
+        cfg['use_colors'] = not args.no_color
+    else:
+        cfg['use_colors'] = True
+    
     return cfg
 
 def construct_search_url(query, config):
@@ -247,14 +384,10 @@ def extract_search_results(html_content, config):
     logger.info(f"Found {len(books)} acceptable format results after filtering")
     return books
 
-def display_selection_menu(books, config):
+def display_selection_menu(books, config, use_colors=True):
     """Display an interactive selection menu for the user to choose a book."""
     if not books:
         return None
-    
-    if len(books) == 1:
-        print(f"Only one result found: {books[0]['title']}")
-        return 0
     
     # Count formats
     format_counts = {}
@@ -262,30 +395,40 @@ def display_selection_menu(books, config):
         format_key = book['format_key']
         format_counts[format_key] = format_counts.get(format_key, 0) + 1
     
-    # Create format count display string
-    format_count_str = ", ".join([
-        f"{count} {config['formats']['definitions'][format_key]['display_name']}" 
-        for format_key, count in format_counts.items()
-    ])
+    # Create format count string with colors
+    format_count_parts = []
+    for format_key, count in format_counts.items():
+        format_name = config['formats']['definitions'][format_key]['display_name']
+        format_icon = config['formats']['definitions'][format_key]['icon']
+        format_count_parts.append(
+            f"{count} {format_icon} {format_name}"
+        )
     
-    print(f"\nFound {len(books)} results ({format_count_str}):")
+    format_count_str = ", ".join(format_count_parts)
     
+    if len(books) == 1:
+        print(f"\n{Style.BRIGHT}Found 1 result:{Style.RESET_ALL} {format_count_str}")
+    else:
+        print(f"\n{Style.BRIGHT}Found {len(books)} results:{Style.RESET_ALL} {format_count_str}")
+    
+    # For the actual menu, create choices with clear format/size info but without ANSI codes
     choices = []
     for i, book in enumerate(books):
+        # Extract size information
         size = "Unknown size"
         if book['format'] and "MB" in book['format']:
             size_match = re.search(r'(\d+\.\d+)MB', book['format'])
             if size_match:
                 size = f"{size_match.group(1)}MB"
         
-        display_name = f"{book['title']} by {book['author']}"
-        
+        # Get format information
         format_icon = book['format_info']['icon']
         format_display = book['format_info']['display_name']
         
-        details = f"\n   {format_icon} Format: {book['format']}\n   Size: {size}"
+        # Create a prominently formatted display name
+        display_name = f"[{i+1}] {book['title']} by {book['author']}\n   {format_icon} {format_display} | {size}"
         
-        choices.append(Choice(value=i, name=f"{display_name}{details}"))
+        choices.append(Choice(value=i, name=display_name))
     
     choices.append(Choice(value=None, name="Cancel download"))
     
@@ -294,7 +437,7 @@ def display_selection_menu(books, config):
         choices=choices,
         default=0,
         qmark="📚",
-        amark="✓",
+        amark="✅",
         instruction="(Use arrow keys to navigate, Enter to select)"
     ).execute()
     
@@ -315,10 +458,24 @@ def extract_fast_download_link(html_content):
     
     return None
 
-def download_file(session, url, output_path, format_info=None):
+def download_file(session, url, output_path, format_info=None, use_colors=True):
     """Download a file with progress reporting."""
-    response = session.get(url, stream=True)
-    response.raise_for_status()
+    if use_colors:
+        print(f"\n{Fore.CYAN}Starting download...{Style.RESET_ALL}")
+    else:
+        print("\nStarting download...")
+    response = robust_request(
+        session, 
+        url, 
+        method="get", 
+        stream=True, 
+        message="Starting download",
+        show_spinner=False
+    )
+    
+    if not response:
+        logger.error("Failed to start download - request failed")
+        return False
     
     content_type = response.headers.get('content-type', '').lower()
     
@@ -335,17 +492,49 @@ def download_file(session, url, output_path, format_info=None):
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     
     downloaded = 0
+    start_time = time.time()
+    last_update = start_time
+    update_interval = 0.5  # Update progress every 0.5 seconds
+    
     with open(output_path, 'wb') as f:
         for chunk in response.iter_content(chunk_size=8192):
             if chunk:
                 f.write(chunk)
                 downloaded += len(chunk)
                 
-                if total_size > 0:
-                    percent = (downloaded / total_size) * 100
-                    print(f"\rDownloading: {downloaded/1024/1024:.1f}MB of {total_size/1024/1024:.1f}MB ({percent:.1f}%)", end='')
+                current_time = time.time()
+                if current_time - last_update > update_interval:
+                    if total_size > 0:
+                        percent = (downloaded / total_size) * 100
+                        elapsed = current_time - start_time
+                        speed = downloaded / elapsed if elapsed > 0 else 0
+                        
+                        # Calculate ETA
+                        if speed > 0 and total_size > downloaded:
+                            eta_seconds = (total_size - downloaded) / speed
+                            eta = str(timedelta(seconds=int(eta_seconds)))
+                        else:
+                            eta = "unknown"
+                        
+                    if use_colors:
+                        print(f"\r{Fore.GREEN}Downloading: {Fore.CYAN}{downloaded/1024/1024:.1f}MB{Fore.RESET} of {Fore.CYAN}{total_size/1024/1024:.1f}MB {Fore.YELLOW}({percent:.1f}%){Fore.RESET} - {Fore.BLUE}{speed/1024/1024:.1f}MB/s{Fore.RESET} - ETA: {Fore.MAGENTA}{eta}{Style.RESET_ALL}", end='')
+                    else:
+                        print(f"\rDownloading: {downloaded/1024/1024:.1f}MB of {total_size/1024/1024:.1f}MB ({percent:.1f}%) - {speed/1024/1024:.1f}MB/s - ETA: {eta}", end='')
+                    else:
+                        if use_colors:
+                            print(f"\r{Fore.GREEN}Downloading: {Fore.CYAN}{downloaded/1024/1024:.1f}MB{Style.RESET_ALL}", end='')
+                        else:
+                            print(f"\rDownloading: {downloaded/1024/1024:.1f}MB", end='')
+                    
+                    last_update = current_time
     
-    print()
+    elapsed = time.time() - start_time
+    speed = downloaded / elapsed if elapsed > 0 else 0
+    
+    if use_colors:
+        print(f"\n{Fore.GREEN}✓ Download completed in {Fore.CYAN}{elapsed:.1f}s{Fore.RESET} ({Fore.BLUE}{speed/1024/1024:.1f}MB/s{Style.RESET_ALL})")
+    else:
+        print(f"\nDownload completed in {elapsed:.1f}s ({speed/1024/1024:.1f}MB/s)")
     return True
 
 def get_filename_from_headers(headers, format_info=None):
@@ -391,43 +580,45 @@ def download_book_by_query(query, config, interactive=False):
     logger.info(f"Searching for query: {query}")
     logger.info(f"URL: {search_url}")
     
-    try:
-        response = session.get(search_url)
-        response.raise_for_status()
-    except requests.RequestException as e:
-        logger.error(f"Search request failed: {e}")
+    # Use robust request for search
+    search_start = time.time()
+    print(f"Searching Anna's Archive for: {query}")
+    
+    response = robust_request(
+        session, 
+        search_url, 
+        message=f"Searching for '{query}'",
+        timeout=(10, 120)  # Longer timeout for search (connect, read)
+    )
+    
+    if not response:
+        logger.error("Search request failed after multiple attempts")
+        print("❌ Search failed. Please check your internet connection and try again.")
         return False
+    
+    search_time = time.time() - search_start
+    logger.info(f"Search completed in {search_time:.2f}s")
     
     books = extract_search_results(response.text, config)
     if not books:
         logger.error("No acceptable format books found for this query")
+        print(f"❌ No books found for query: {query}")
         return False
     
     # Handle selection based on mode (interactive vs automatic)
     selected_book = None
     
     if interactive:
-        selected_idx = display_selection_menu(books, config)
+        # Always show selection menu in interactive mode
+        selected_idx = display_selection_menu(books, config, config.get('use_colors', True))
         if selected_idx is None:
             logger.info("User cancelled selection")
             return False
         selected_book = books[selected_idx]
     else:
-        # For automatic mode, try to find the best match
-        if len(books) == 1:
-            selected_book = books[0]
-        else:
-            # Try to find an exact match in title or author
-            for book in books:
-                if query.lower() in book['title'].lower() or query.lower() in book['author'].lower():
-                    logger.info(f"Found exact query match: {book['title']}")
-                    selected_book = book
-                    break
-            
-            # If no exact match found, use the first result
-            if not selected_book:
-                logger.info(f"Using first result: {books[0]['title']}")
-                selected_book = books[0]
+        # For automatic mode, use the first result by default
+        selected_book = books[0]
+        logger.info(f"Automatic mode: using first result: {books[0]['title']}")
     
     # Determine metadata about the selected book
     is_partial_match = selected_book.get('is_partial_match', False)
@@ -440,50 +631,64 @@ def download_book_by_query(query, config, interactive=False):
     book_url = urljoin(BASE_URL, selected_book['link'])
     logger.info(f"Accessing book page: {book_url}")
     
-    try:
-        response = session.get(book_url)
-        response.raise_for_status()
-    except requests.RequestException as e:
-        logger.error(f"Book page request failed: {e}")
+    response = robust_request(
+        session, 
+        book_url, 
+        message=f"Loading book details",
+        timeout=(10, 60)
+    )
+    
+    if not response:
+        logger.error("Book page request failed after multiple attempts")
+        print("❌ Failed to access book details. Please try again.")
         return False
     
     download_link = extract_fast_download_link(response.text)
     if not download_link:
         logger.error("No download link found on the book page")
+        print("❌ No download link found. This book may not be available for direct download.")
         return False
     
     # Start download process
     download_url = urljoin(BASE_URL, download_link)
     logger.info(f"Found download link: {download_url}")
     
-    try:
-        # Get file metadata before downloading
-        response = session.head(download_url)
-        response.raise_for_status()
+    # Get file metadata before downloading
+    head_response = robust_request(
+        session, 
+        download_url, 
+        method="head", 
+        message="Checking download details",
+        timeout=(10, 30)
+    )
+    
+    if not head_response:
+        logger.error("Failed to get download metadata")
+        print("❌ Failed to prepare download. Please try again.")
+        return False
+    
+    # Determine filename, either from headers or construct from book info
+    filename = get_filename_from_headers(head_response.headers, selected_book['format_info'])
+    if not filename:
+        title = clean_filename(selected_book['title'])
+        author = clean_filename(selected_book.get('author', 'Unknown'))
+        extension = selected_book['format_info']['extension']
         
-        # Determine filename, either from headers or construct from book info
-        filename = get_filename_from_headers(response.headers, selected_book['format_info'])
-        if not filename:
-            title = clean_filename(selected_book['title'])
-            author = clean_filename(selected_book.get('author', 'Unknown'))
-            extension = selected_book['format_info']['extension']
-            
-            filename = f"{title} - {author}{extension}"
-        
-        output_path = os.path.join(output_dir, filename)
-        logger.info(f"Downloading to: {output_path}")
-        
-        # Download the actual file
-        download_success = download_file(session, download_url, output_path, selected_book['format_info'])
-        if download_success:
-            logger.info(f"Successfully downloaded: {filename}")
-            return True
-        else:
-            logger.error("Download failed")
-            return False
-            
-    except requests.RequestException as e:
-        logger.error(f"Download failed: {e}")
+        filename = f"{title} - {author}{extension}"
+    
+    output_path = os.path.join(output_dir, filename)
+    logger.info(f"Downloading to: {output_path}")
+    print(f"Preparing to download: {filename}")
+    
+    # Download the actual file
+    download_success = download_file(session, download_url, output_path, selected_book['format_info'], config.get('use_colors', True))
+    if download_success:
+        logger.info(f"Successfully downloaded: {filename}")
+        print(f"✅ Successfully downloaded: {filename}")
+        return True
+    else:
+        logger.error("Download failed")
+        print("❌ Download failed. Please try again.")
         return False
 
 def interactive_mode(config, verbose):
@@ -496,13 +701,13 @@ def interactive_mode(config, verbose):
     else:
         logger.setLevel(logging.INFO)
     
-    # Display welcome message and instructions
-    print("\n=== Anna's Archive Interactive Downloader ===")
-    print(f"Output directory: {output_dir}")
-    print("Enter search queries one at a time. Type 'exit', 'quit', or press Ctrl+C to exit.")
-    print("You can also paste multiple queries (one per line).")
-    print("When multiple books are found, you'll get a selection menu.")
-    print("=========================================\n")
+    # Display welcome message and instructions with colors
+    print(f"\n{Style.BRIGHT}{Fore.CYAN}=== Anna's Archive Interactive Downloader ==={Style.RESET_ALL}")
+    print(f"Output directory: {Fore.YELLOW}{output_dir}{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}Enter search queries one at a time. Type 'exit', 'quit', or press Ctrl+C to exit.")
+    print(f"You can also paste multiple queries (one per line).")
+    print(f"When multiple books are found, you'll get a selection menu.{Style.RESET_ALL}")
+    print(f"{Style.BRIGHT}{Fore.CYAN}=========================================={Style.RESET_ALL}\n")
     
     # Set up session with user agent and authentication
     session = requests.Session()
@@ -538,13 +743,22 @@ def interactive_mode(config, verbose):
                 search_url = construct_search_url(query, config)
                 logger.info(f"URL: {search_url}")
                 
-                try:
-                    response = session.get(search_url)
-                    response.raise_for_status()
-                except requests.RequestException as e:
-                    logger.error(f"Search request failed: {e}")
+                # Use robust request for search
+                search_start = time.time()
+                response = robust_request(
+                    session, 
+                    search_url, 
+                    message=f"Searching for '{query}'",
+                    timeout=(10, 120)  # Longer timeout for search
+                )
+                
+                if not response:
+                    logger.error("Search request failed after multiple attempts")
                     print(f"❌ Search failed for query: {query}")
                     continue
+                
+                search_time = time.time() - search_start
+                logger.info(f"Search completed in {search_time:.2f}s")
                 
                 books = extract_search_results(response.text, config)
                 
@@ -553,7 +767,7 @@ def interactive_mode(config, verbose):
                     continue
                 
                 # Let user select which book to download
-                selected_idx = display_selection_menu(books, config)
+                selected_idx = display_selection_menu(books, config, config.get('use_colors', True))
                 if selected_idx is None:
                     print(f"Download cancelled for query: {query}")
                     continue
@@ -565,11 +779,15 @@ def interactive_mode(config, verbose):
                 book_url = urljoin(BASE_URL, selected_book['link'])
                 logger.info(f"Accessing book page: {book_url}")
                 
-                try:
-                    response = session.get(book_url)
-                    response.raise_for_status()
-                except requests.RequestException as e:
-                    logger.error(f"Book page request failed: {e}")
+                response = robust_request(
+                    session, 
+                    book_url, 
+                    message=f"Loading book details",
+                    timeout=(10, 60)
+                )
+                
+                if not response:
+                    logger.error("Book page request failed")
                     print(f"❌ Failed to access book page for query: {query}")
                     continue
                 
@@ -582,33 +800,38 @@ def interactive_mode(config, verbose):
                 download_url = urljoin(BASE_URL, download_link)
                 logger.info(f"Found download link: {download_url}")
                 
-                try:
-                    # Get file metadata before downloading
-                    response = session.head(download_url)
-                    response.raise_for_status()
+                # Get file metadata before downloading
+                head_response = robust_request(
+                    session, 
+                    download_url, 
+                    method="head", 
+                    message="Checking download details",
+                    timeout=(10, 30)
+                )
+                
+                if not head_response:
+                    logger.error("Failed to get download metadata")
+                    print("❌ Failed to prepare download. Please try again.")
+                    continue
+                
+                # Determine filename, either from headers or construct from book info
+                filename = get_filename_from_headers(head_response.headers, selected_book['format_info'])
+                if not filename:
+                    title = clean_filename(selected_book['title'])
+                    author = clean_filename(selected_book.get('author', 'Unknown'))
+                    extension = selected_book['format_info']['extension']
                     
-                    # Determine filename, either from headers or construct from book info
-                    filename = get_filename_from_headers(response.headers, selected_book['format_info'])
-                    if not filename:
-                        title = clean_filename(selected_book['title'])
-                        author = clean_filename(selected_book.get('author', 'Unknown'))
-                        extension = selected_book['format_info']['extension']
-                        
-                        filename = f"{title} - {author}{extension}"
-                    
-                    output_path = os.path.join(output_dir, filename)
-                    
-                    # Download the actual file
-                    print(f"Downloading to: {output_path}")
-                    download_success = download_file(session, download_url, output_path, selected_book['format_info'])
-                    if download_success:
-                        print(f"✅ Successfully downloaded: {filename}")
-                    else:
-                        print("❌ Download failed")
-                        
-                except requests.RequestException as e:
-                    logger.error(f"Download failed: {e}")
-                    print(f"❌ Download failed: {e}")
+                    filename = f"{title} - {author}{extension}"
+                
+                output_path = os.path.join(output_dir, filename)
+                print(f"Preparing to download: {filename}")
+                
+                # Download the actual file
+                download_success = download_file(session, download_url, output_path, selected_book['format_info'], config.get('use_colors', True))
+                if download_success:
+                    print(f"✅ Successfully downloaded: {filename}")
+                else:
+                    print("❌ Download failed")
     
     except KeyboardInterrupt:
         print("\nExiting...")
@@ -642,14 +865,26 @@ def debug_search(query, config, verbose=False):
     logger.info(f"Searching for query: {query}")
     logger.info(f"URL: {search_url}")
     
-    try:
-        response = session.get(search_url)
-        response.raise_for_status()
-    except requests.RequestException as e:
-        logger.error(f"Search request failed: {e}")
+    # Use robust request for search
+    print(f"Searching Anna's Archive for: {query}")
+    search_start = time.time()
+    
+    response = robust_request(
+        session, 
+        search_url, 
+        message=f"Searching for '{query}'",
+        timeout=(10, 120)  # Longer timeout for search
+    )
+    
+    if not response:
+        logger.error("Search request failed after multiple attempts")
+        print("❌ Search failed. Please check your internet connection and try again.")
         return 1
     
-    debug_file = os.path.join(output_dir, "results.html")
+    search_time = time.time() - search_start
+    logger.info(f"Search completed in {search_time:.2f}s")
+    
+    debug_file = "results.html"
     with open(debug_file, "w", encoding="utf-8") as f:
         f.write(response.text)
     logger.info(f"Saved full HTML response to {debug_file}")
@@ -661,8 +896,10 @@ def debug_search(query, config, verbose=False):
     
     print("\n===== DEBUG SEARCH RESULTS =====")
     print(f"Query: {query}")
+    print(f"Search completed in: {search_time:.2f} seconds")
     print(f"Total results found: {len(books)}")
     print(f"Raw MD5 link count in HTML: {md5_count}")
+    print(f"HTML saved to: {debug_file}")
     
     for i, book in enumerate(books):
         print(f"\nResult {i+1}:")
@@ -706,6 +943,7 @@ def main():
     for subparser in [single_parser, interactive_parser, debug_parser]:
         subparser.add_argument('--output', '-o', help='Directory to save downloaded books (overrides config)')
         subparser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose logging')
+        subparser.add_argument('--no-color', action='store_true', help='Disable colored output')
         
         # Add config override arguments using nargs='+' to accept multiple values
         subparser.add_argument('--formats', nargs='+', help='Formats to include (all others will be ignored)')
