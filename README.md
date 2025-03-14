@@ -1,13 +1,13 @@
 # Anna's Archive Downloader
 
-A Python script for automatically downloading books from Anna's Archive using ISBNs.
+A Python script for automatically downloading books from Anna's Archive using search queries (ISBNs, titles, authors, etc).
 
 ## Features
 
-- Search Anna's Archive for books by keyword (I usually use ISBN but sometimes title)
-- Select the best match based on search results
+- Search Anna's Archive using any search query (ISBN, title, author, etc.)
+- Interactive selection from all available format options
 - Automatically download books via fast partner servers
-- Multiple authentication options including direct account ID
+- Simple environment variable authentication
 - Detailed logging and progress reporting
 
 ## Requirements
@@ -15,6 +15,8 @@ A Python script for automatically downloading books from Anna's Archive using IS
 - Python 3.8+
 - Requests
 - BeautifulSoup4
+- InquirerPy
+- python-dotenv
 
 ## Installation
 
@@ -64,76 +66,114 @@ A Python script for automatically downloading books from Anna's Archive using IS
    pip install -r requirements.txt
    ```
 
+6. **Set up authentication**:
+
+   ```bash
+   # Copy the example .env file
+   cp .env.example .env
+   
+   # Edit the .env file with your Anna's Archive account ID
+   # You can find this by logging into Anna's Archive and checking your cookies
+   # Look for the "aa_account_id2" cookie value
+   ```
+
 ## Usage
 
-### Basic Usage
+### Operation Modes
+
+The script supports three primary modes of operation:
+
+#### 1. Single Mode
+
+Search for a book with a specific query and download it:
 
 ```bash
-python annas_downloader.py 9781250881205 --account-id "your_account_id_cookie_value" --output books/
+python aapy.py single "9781250881205" --output books/
 ```
+
+You can also search by title:
+
+```bash
+python aapy.py single "Project Hail Mary"
+```
+
+#### 2. Interactive Mode
+
+Start an interactive session for multiple searches and downloads:
+
+```bash
+python aapy.py interactive
+```
+
+This mode allows you to:
+- Enter multiple search queries (one at a time)
+- Select from all available formats for each book
+- Cancel any download at any point
+
+#### 3. Debug Mode
+
+Search for books without downloading them (useful for testing and troubleshooting):
+
+```bash
+python aapy.py debug "Foundation Asimov"
+```
+
+### Selection Menu
+
+All modes present an interactive selection menu that shows:
+- Book title and author
+- Format information (EPUB 📙, PDF 📑, MOBI 📕)
+- File size when available
+- Option to cancel the download
+
+This allows you to make an informed choice even when only one result is found.
 
 ### Command Line Options
 
 ```
-usage: annas_downloader.py [-h] [--auth AUTH | --curl CURL | --account-id ACCOUNT_ID] [--output OUTPUT] [--verbose]
-                           isbn
+usage: aapy.py {single,interactive,debug} [-h] [--output OUTPUT] [--verbose]
 
-Download books from Anna's Archive by ISBN
+Download books from Anna's Archive by search query
 
-positional arguments:
-  isbn                  ISBN of the book to download
+modes:
+  single               Download a book by search query (ISBN, title, etc)
+  interactive          Run in interactive mode to download multiple books
+  debug                Debug search results without downloading
 
 options:
   -h, --help            show this help message and exit
-  --auth AUTH           Path to JSON file with authentication headers
-  --curl CURL           Path to file containing curl command with authentication
-  --account-id ACCOUNT_ID
-                        Anna's Archive account ID cookie value
   --output OUTPUT, -o OUTPUT
-                        Directory to save downloaded books
+                        Directory to save downloaded books (overrides OUTPUT_DIR in .env)
   --verbose, -v         Enable verbose logging
 ```
 
-### Authentication Options
+### Authentication
 
-#### Using an Account ID (Recommended)
+Authentication is handled via the `.env` file, which should contain your Anna's Archive account ID:
 
-Get your account ID cookie value from Anna's Archive by logging in and inspecting your cookies.
-
-```bash
-python annas_downloader.py 9781250881205 --account-id "eyJhIjoiOUtXZE5OTiIsImlhdCI6MTc0MTQ5NzAyMX0.example" --output books/
+```
+AA_ACCOUNT_ID=your_account_id_here
+OUTPUT_DIR=books/
 ```
 
-#### Using a curl Command
-
-```bash
-# Save your curl command to a file
-echo 'curl "https://annas-archive.org/search?..." -H "accept: text/html..." -b "aa_account_id2=..."' > auth.txt
-
-# Use the curl file for authentication
-python annas_downloader.py 9781250881205 --curl auth.txt --output books/
-```
-
-#### Using a JSON Headers File
-
-```bash
-# Create a JSON file with your headers
-echo '{"Cookie": "aa_account_id2=your_cookie_value"}' > headers.json
-
-# Use the headers file for authentication
-python annas_downloader.py 9781250881205 --auth headers.json --output books/
-```
+To find your account ID:
+1. Log in to Anna's Archive in your browser
+2. Open your browser's developer tools (F12 or right-click → Inspect)
+3. Go to the Storage or Application tab (depends on browser)
+4. Look for Cookies → annas-archive.org
+5. Find the cookie named `aa_account_id2` and copy its value
+6. Paste this value in your `.env` file
 
 ## How It Works
 
-1. **Search Phase**: Searches Anna's Archive with specific parameters to find the most relevant book match
-2. **Selection Phase**: Selects the best book from search results
+1. **Search Phase**: Searches Anna's Archive with specific parameters to find books matching your query
+2. **Selection Phase**: Presents an interactive menu of all matching books with format details
 3. **Download Phase**: Finds the fastest download link and saves the book file
 
 ## Notes
 
 - The script will only search for and download books available through Anna's Archive directly (not external sources)
-- By default, it will download EPUB format books in English
+- By default, it prioritizes EPUB format, then PDF, then MOBI
 - Search parameters are customizable by modifying the `DEFAULT_SEARCH_PARAMS` dictionary in the script
 
 ## Customizing Search Parameters
@@ -145,7 +185,7 @@ DEFAULT_SEARCH_PARAMS = {
     # Basic search parameters
     'index': '',
     'page': '1',
-    'q': '',  # Will be set to ISBN
+    'q': '',  # Will be set to your search query
     'display': '',
     'sort': '',
     
